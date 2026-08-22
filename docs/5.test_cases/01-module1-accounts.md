@@ -26,10 +26,21 @@
 - Root HR admin with nobody above gets `manager: null`, `hr: null`
 - Session invalidated (401) once the underlying user is set `INACTIVE`
 
+**Server — `authMe.test.js`** (session token integrity)
+- Rejects a token signed with the wrong secret (a forged signature, everything else correct)
+- Rejects an `alg: none` token — the classic downgrade, where a valid header/payload carries an empty signature
+- Rejects an expired but otherwise perfectly valid token, with the "Session expired" message
+- Rejects a malformed cookie value that isn't a JWT at all
+- Clears the auth cookie whenever it rejects a bad token, so the browser stops resending it
+- Rejects a correctly signed token for a user id that no longer exists (401, not a crash on a null row)
+- Rejects a correctly signed token whose subject isn't a user id at all — this one **found a real 500**: a non-UUID subject reached Postgres as an invalid uuid literal (`22P02`, unmapped in `errorHandler`), now shape-checked in `requireAuth`
+- Ignores the role claimed in the token payload and uses the database's own role, pinning the "re-fetch, don't trust the payload" property `requireAuth` is built on
+
 **Server — `authRegisterHr.test.js`**
 - Creates the singleton `SUPER_ADMIN` (no manager, `profile_status: VERIFIED`), sets a session cookie, never leaks `password_hash`
 - Rejects an invalid registration code (401)
 - Rejects a second bootstrap once a `SUPER_ADMIN` exists (409); confirms only one ever exists across repeated attempts
+- **Concurrency**: two simultaneous bootstraps yield exactly one 201 and one 409, the loser gets the same "already exists" message as the sequential case (not the generic unique-violation wording), and exactly one `SUPER_ADMIN` row exists afterwards — a test the app-level `existsUserWithRole` check cannot pass on its own, so it's really a test of `uq_users_single_super_admin` (migration 038)
 
 **Server — `invitationFlow.test.js`**
 - Full happy path: invite → verify → accept (status → `ACTIVE`) → login; re-accepting the same token afterward is rejected (401)
@@ -39,6 +50,17 @@
 - Rejects an `HR_ADMIN` invite whose manager is a `MANAGER` (400)
 - Rejects a `MANAGER` invite whose manager is another `MANAGER` (400)
 - Rejects an `EMPLOYEE` invite whose manager is another `EMPLOYEE` (400)
+
+**Server — `invitationFlow.test.js`** (re-inviting a pending employee)
+- A resend issues a working new link, kills the old one (401 on the previous token), answers `200` with `reissued: true` rather than `201`, leaves exactly **one** invitation row, and the new link still accepts into an `ACTIVE` account
+- Reissues against the stored row: a changed name, role and manager in the re-invite body are all ignored
+- An HR admin resending for someone in their scope they didn't create doesn't become the creator — `invited_by` survives untouched
+- An address on an already-active account still 409s, with its own distinct message ("An account with this email already exists")
+- A resend from an HR admin in another branch is refused (409) **and leaves the original link alive** — a refused resend must not burn the real one
+- An invitation that has lapsed but not yet been swept reissues rather than refusing (the window where the token is dead but the email is still taken)
+
+**Server — `inviteEmail.test.js`** (resend delivery)
+- A resend emails the invitee again with a genuinely different link, reports `emailSent: true`, and reuses the first-invite template (the recipient may never have seen the original)
 
 **Server — `inviteEmail.test.js`** (`mailService` mocked, same convention as `passwordReset.test.js`)
 - Emails the invitee the same link returned to HR, with the inviter's name, the role and the expiry window
@@ -135,10 +157,14 @@
 
 ### 🔴🟡 Gaps
 
-- 🔴 **No concurrency test for the `SUPER_ADMIN` singleton guard.** All existing tests call `POST /auth/register/hr` sequentially. `existsUserWithRole` is an app-level check-then-insert, not (as far as the schema shows) a DB-level uniqueness constraint on "one row with this role" — two genuinely simultaneous bootstrap requests could both pass the check before either commits. Worth a targeted test (or a DB constraint) before trusting the singleton guarantee under real concurrency.
-- 🔴 **No test of a tampered or expired JWT being rejected.** `authMe.test.js` covers session invalidation via `INACTIVE` status, but nothing exercises a forged signature, a manually expired token, or a malformed cookie value hitting a protected route.
+> ✅ **Two 🔴 gaps previously listed here are closed** (see the covered sections above). Both are recorded in
+> `.claude/rules/02-backend-conventions.md` because both turned out to be more than test debt: the `SUPER_ADMIN`
+> singleton was only ever enforced in the application (a check-then-insert), now backed by a partial unique index in
+> migration `038`; and the token-integrity tests found a correctly-signed non-UUID subject answering `500` instead of
+> `401`, now guarded in `requireAuth`.
+
 - 🔴 **No IP-level rate-limiting / brute-force protection test on login** — and as far as the codebase shows, no such middleware exists at all. Worth confirming whether this is in scope; if not, it's a product gap, not just a test gap. Password reset now has a *per-account* cooldown (covered above), but that's keyed on `user_id` and doesn't stop an attacker cycling many known addresses — so the IP-level gap remains for that endpoint too.
-- 🟡 No test for inviting the same email twice while an existing invite is still pending (not yet expired) — what's the conflict behavior?
+- ✅ **Covered (was 🟡): re-inviting an email whose invite is still pending.** The answer to "what's the conflict behavior?" turned out to be "an opaque generic 409, and no way forward for up to 12 hours" — so this was closed by *changing* the behaviour, not just testing it: a re-invite now reissues the link in place. See the two covered sections above, `.claude/rules/03-features-and-access.md` for why each part is shaped the way it is, and §5 of the role matrix for the row-level rule on who may resend.
 - 🟡 No test of Google OAuth re-linking an account that's already linked (idempotency).
 - 🟡 **Seed script for demo data is not built** (per `.claude/rules.md` — 3-level reporting tree, 2 leave types, holiday calendar, one login per role). Not a test case itself, but it blocks fast, repeatable module-by-module manual testing in any environment — worth prioritizing given today's stated goal.
 
