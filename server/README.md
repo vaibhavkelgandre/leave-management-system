@@ -153,6 +153,12 @@ This is an **ensure** step, not an environment builder. Both databases already c
 - **Documents** are never uploaded. Nothing is put in Cloudinary that no teardown would remove.
 - **Payroll** is never generated, and the 200-employee NFR-7 performance dataset is explicitly out of scope — that's a separate job, and one that must never share a database with real records.
 
+### Before running this on production
+
+The demo `HR_ADMIN` account can read **every** employee's PAN, Aadhar, passport and bank details — `GET /users` is company-wide for HR by design, and masking applies only to managers. So a shareable HR password is only acceptable while that database holds no private data.
+
+As of 2026-08-22 the deployed database holds test data only, which is why all three accounts are fine there. **If real employee data ever lands in production, remove the demo HR account or rotate its password out of circulation** — the demo manager and employee logins are unaffected either way, since neither can read another person's sensitive fields.
+
 ### Safety
 
 - **Plan by default.** Without `--yes` it reads and reports, writing nothing.
