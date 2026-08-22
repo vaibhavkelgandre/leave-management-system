@@ -19,27 +19,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pool from "../config/db.js";
 import { applyPending, baseline, inspect } from "./migrations.js";
+import { describeTarget } from "./describeTarget.js";
 
 dotenv.config();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const sqlDir = path.join(__dirname, "..", "sql");
-
-// Read from the same env the pool did, rather than asking the pool for its
-// config — DATABASE_URL and the discrete DB_* vars are two different shapes
-// (see config/db.js) and only one of them is ever set.
-function describeTarget() {
-    if (process.env.DATABASE_URL) {
-        try {
-            const url = new URL(process.env.DATABASE_URL);
-            // Never print the password, which is in this URL.
-            return `${url.pathname.replace(/^\//, "")} on ${url.hostname} (via DATABASE_URL)`;
-        } catch {
-            return "(unparseable DATABASE_URL)";
-        }
-    }
-    return `${process.env.DB_NAME} on ${process.env.DB_HOST}:${process.env.DB_PORT}`;
-}
 
 async function status(flags) {
     const { files, applied, rows, pending, changed, orphaned } = await inspect({ pool, dir: sqlDir });
