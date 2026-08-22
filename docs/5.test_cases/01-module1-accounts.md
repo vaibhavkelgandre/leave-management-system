@@ -29,6 +29,7 @@
 **Server — `authMe.test.js`** (session token integrity)
 - Rejects a token signed with the wrong secret (a forged signature, everything else correct)
 - Rejects an `alg: none` token — the classic downgrade, where a valid header/payload carries an empty signature
+- Rejects a token signed **HS512 with the real secret** — jsonwebtoken's default allowlist for a string secret is the whole HMAC family, so this verified fine until `verifyAuthToken` pinned `algorithms: ["HS256"]`; the test is what proves the pin, and closes the security doc's LOW finding
 - Rejects an expired but otherwise perfectly valid token, with the "Session expired" message
 - Rejects a malformed cookie value that isn't a JWT at all
 - Clears the auth cookie whenever it rejects a bad token, so the browser stops resending it

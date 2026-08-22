@@ -111,6 +111,23 @@ describe("GET /api/auth/me — session token integrity", () => {
         expect(response.statusCode).toBe(401);
     });
 
+    it("rejects a token signed with a different HMAC algorithm, even with the real secret", async () => {
+        // jsonwebtoken's default for a string secret is the whole HMAC family,
+        // so before verifyAuthToken pinned algorithms this HS512 token was
+        // accepted — a valid session signed with an algorithm we never issue.
+        // Pinning is what makes "we accept exactly what we issue" true rather
+        // than incidental, and this is the case that proves it.
+        const user = await createUser({ email: "alg-swap@example.com" });
+        const wrongAlgorithm = jwt.sign({ sub: user.id, role: "EMPLOYEE" }, process.env.JWT_SECRET, {
+            algorithm: "HS512",
+            expiresIn: "8h",
+        });
+
+        const response = await asCookie(wrongAlgorithm);
+
+        expect(response.statusCode).toBe(401);
+    });
+
     it("rejects an expired but otherwise perfectly valid token", async () => {
         const user = await createUser({ email: "expired@example.com" });
         const expired = jwt.sign({ sub: user.id, role: "EMPLOYEE" }, process.env.JWT_SECRET, { expiresIn: "-1s" });
