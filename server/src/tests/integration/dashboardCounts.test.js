@@ -21,6 +21,7 @@ import {
     createDelegation,
 } from "./helpers/factories.js";
 import { loginAs } from "./helpers/authHelpers.js";
+import { leaveRangeCoveringToday, leaveRangeAfterToday } from "./helpers/dates.js";
 import { todayDateKey, addDaysToDateKey } from "../../utils/dates.js";
 
 async function pendingCount(agent) {
@@ -138,6 +139,9 @@ describe("GET /api/leave-requests/pending-count", () => {
         await createDelegation({
             managerId: manager.id,
             delegateId: delegate.id,
+            // Three consecutive days always contain a working day, whatever
+            // day of the week it is — see helpers/dates.js on why anything
+            // narrower needs one of the helpers there.
             startDate: addDaysToDateKey(today, -1),
             endDate: addDaysToDateKey(today, 1),
         });
@@ -169,6 +173,9 @@ describe("GET /api/leave-requests/on-leave-today", () => {
         const approved = await createLeaveRequest({
             employeeId: outToday.id,
             leaveTypeId: leaveType.id,
+            // Three consecutive days always contain a working day, whatever
+            // day of the week it is — see helpers/dates.js on why anything
+            // narrower needs one of the helpers there.
             startDate: addDaysToDateKey(today, -1),
             endDate: addDaysToDateKey(today, 1),
         });
@@ -177,17 +184,15 @@ describe("GET /api/leave-requests/on-leave-today", () => {
         const future = await createLeaveRequest({
             employeeId: outLater.id,
             leaveTypeId: leaveType.id,
-            startDate: addDaysToDateKey(today, 10),
-            endDate: addDaysToDateKey(today, 11),
+            ...leaveRangeAfterToday(10),
         });
         await managerAgent.post(`/api/leave-requests/${future.id}/approve`).send({});
 
-        // Approved-today's neighbour: today's dates, but never decided.
+        // Approved-today's neighbour: overlaps today, but never decided.
         await createLeaveRequest({
             employeeId: pendingToday.id,
             leaveTypeId: leaveType.id,
-            startDate: today,
-            endDate: today,
+            ...leaveRangeCoveringToday(),
         });
 
         const response = await managerAgent.get("/api/leave-requests/on-leave-today");
@@ -202,13 +207,11 @@ describe("GET /api/leave-requests/on-leave-today", () => {
         const hrB = await createRootHr({ email: "today-hrB@example.com" });
         const employeeOfB = await createUser({ managerId: hrB.id, email: "today-emp-of-b@example.com" });
         const leaveType = await createLeaveType({ name: "Today Scope Leave", annualEntitlement: 30 });
-        const today = todayDateKey();
 
         const approved = await createLeaveRequest({
             employeeId: employeeOfB.id,
             leaveTypeId: leaveType.id,
-            startDate: today,
-            endDate: today,
+            ...leaveRangeCoveringToday(),
         });
         await (await loginAs(hrB)).post(`/api/leave-requests/${approved.id}/approve`).send({});
 
