@@ -1,13 +1,15 @@
 import dotenv from "dotenv";
 import { beforeEach, afterAll } from "vitest";
+import { assertTestDatabase } from "./helpers/testDatabaseGuard.js";
 
 dotenv.config({ path: ".env.test", override: true });
 
-if (process.env.NODE_ENV !== "test" || !process.env.DB_NAME?.endsWith("_test")) {
-    throw new Error(
-        "Refusing to run integration tests: NODE_ENV must be 'test' and DB_NAME must end with '_test'. Check server/.env.test."
-    );
-}
+// Must run before config/db.js is imported below, since importing it builds
+// the pool. See testDatabaseGuard.js for what each condition is protecting
+// against — in particular DATABASE_URL, which config/db.js prefers over
+// DB_NAME and which this file's own beforeEach would otherwise happily
+// truncate.
+assertTestDatabase(process.env);
 
 const { default: pool } = await import("../../config/db.js");
 

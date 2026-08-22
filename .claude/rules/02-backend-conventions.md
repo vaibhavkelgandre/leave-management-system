@@ -97,6 +97,27 @@
 - Never commit real `.env` values.
 - Never log secrets, credentials, or password values (plain or hashed) to console or error responses. This includes **raw reset/invite tokens and the links containing them** — `passwordResetService.js` deliberately keeps the link out of its mail-failure log for exactly this reason.
 
+> 🚨 **The same leak, but with `DATABASE_URL`, could have truncated production — and the existing guard did not catch
+> it.** `config/db.js` prefers `DATABASE_URL` over the discrete `DB_*` vars **whenever it is set**, while
+> `setup.js`'s guard only ever checked `DB_NAME`. `.env.test` sets `DB_NAME` to a `_test` value, so with a
+> `DATABASE_URL` left in the shell — exactly what you set to run a migration against Render — the guard passed on one
+> variable while the pool connected using another, and `setup.js`'s `beforeEach` then ran
+> `TRUNCATE users, invitations, … CASCADE` against **production**, reporting a healthy green run while doing it.
+> Nothing was lost; the window was found and closed before anyone ran the suite in such a terminal.
+> - **The rule is now enforced in code, not by memory:** `helpers/testDatabaseGuard.js`'s `assertTestDatabase` refuses
+>   unless `NODE_ENV` is `test`, `DB_NAME` ends in `_test`, **and** any `DATABASE_URL` present also names a `_test`
+>   database. An unparseable URL is refused too — "can't tell" must fail closed. Ten unit tests cover it, including
+>   that the error names the database but never the connection string, which holds a password.
+> - **It is extracted from `setup.js` on purpose.** Inline, the rule could only be exercised by spawning an entire
+>   vitest run, so in practice it was never tested — which is precisely how it carried a hole this size.
+> - **`assertTestDatabase` must stay above the `config/db.js` import in `setup.js`.** Importing that module builds the
+>   pool; the check is worthless after it.
+> - **Belt and braces, same as SMTP:** `.env.test` also blanks `DATABASE_URL=`, which neutralises a shell value via
+>   `override: true` before the guard even looks. That half protects this machine only — `.env.test` is gitignored, so
+>   the committed guard is the half that protects a fresh clone.
+> - **Operationally:** prefer setting `DATABASE_URL` for a single command over exporting it into a shell you keep
+>   using. While it is set, every `npm run migrate` *and* every `npm test` in that terminal is aimed at production.
+
 > ⚠️ **`server/.env` leaks into the test process, so blank every new secret in `.env.test`.** `tests/integration/setup.js` loads `.env.test` with `override: true`, but `config/cloudinary.js` and `config/mailer.js` each call `dotenv.config()` on import (non-override) — so any key present in `.env` and **absent** from `.env.test` still lands in `process.env` during a test run. When SMTP credentials were added this became a live hazard: without blank `SMTP_HOST=`/`SMTP_USER=`/`SMTP_PASS=` entries in `.env.test`, any test touching a mail path without stubbing the service would send **real email**. Belt and braces: those blank entries exist, *and* `config/mailer.js`'s `sendMail` hard-returns when `NODE_ENV === "test"`.
 
 ---
