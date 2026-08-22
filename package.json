@@ -8,6 +8,7 @@
         "test:server": "npm --prefix server run test:run",
         "test:client": "npm --prefix client run test -- --run",
         "migrate": "npm --prefix server run migrate",
-        "migrate:status": "npm --prefix server run migrate:status"
+        "migrate:status": "npm --prefix server run migrate:status",
+        "seed": "npm --prefix server run seed"
     }
 }

@@ -110,6 +110,75 @@ npm run test:run  # single run
 
 Integration tests hit the real `_test` database defined in `.env.test` — they truncate its tables before every test, so never point `.env.test` at a database with real data.
 
+The suite refuses to start unless `NODE_ENV=test`, `DB_NAME` ends in `_test`, **and** any `DATABASE_URL` present also names a `_test` database (`src/tests/integration/helpers/testDatabaseGuard.js`). That third condition matters because `config/db.js` prefers `DATABASE_URL` over the discrete `DB_*` vars whenever it is set — so a connection string left in your shell from a migration run would otherwise silently redirect the truncation.
+
+## 7. Seed the demo logins
+
+```bash
+npm run seed                # plan only — prints what it would do, writes nothing
+npm run seed -- --yes       # actually create what's missing
+```
+
+`DEMO_PASSWORD` must be set, and is deliberately never defaulted and never committed. Set it for the one command:
+
+```bash
+DEMO_PASSWORD='choose-something' npm run seed -- --yes
+```
+
+```powershell
+$env:DEMO_PASSWORD="choose-something"; npm run seed -- --yes
+```
+
+### What it creates
+
+Three accounts, on `@example.com` (reserved by RFC 2606, so they can never reach a real inbox), each `ACTIVE` with a `VERIFIED` profile so a reviewer lands in the app rather than the onboarding form:
+
+| Email | Role | Reports to |
+|---|---|---|
+| `demo.hr@example.com` | `HR_ADMIN` | the existing `SUPER_ADMIN` |
+| `demo.manager@example.com` | `MANAGER` | `demo.hr@example.com` |
+| `demo.employee@example.com` | `EMPLOYEE` | `demo.manager@example.com` |
+
+All three share the `DEMO_PASSWORD` you supplied. Together with the existing super admin that's a four-level reporting chain, which covers deliverable #2's "at least three levels deep".
+
+It also creates three leave requests for the demo employee — one still pending, one approved, one rejected with a comment — so signing in as the manager shows an approvals queue rather than an empty page. Those go through `submitLeaveRequest`/`decideLeaveRequest`, not raw inserts, so balances, the ledger and the audit trail are correct by construction. Any of the three that can't be created legally (a public holiday on the chosen date, for instance) is skipped and reported, never forced.
+
+### What it deliberately leaves untouched
+
+This is an **ensure** step, not an environment builder. Both databases already contain a reporting hierarchy, leave types, holidays, leave history and salary structures — none of it belongs to this script:
+
+- **Existing users** are never modified. An email that already exists is reported as `exists` and left exactly as it is, in case it's somebody's real account.
+- **Leave types** are never created. Creating one backfills a balance row for *every active employee* — a global side effect on people with nothing to do with the demo. The script picks an existing active type instead (needs entitlement ≥ 5 and `requires_document: false`), and skips the demo activity if there isn't one.
+- **Holidays** are never created. Holidays are global and feed the working-day calculation, so adding one changes the day count of every future request in the system, for everyone.
+- **Documents** are never uploaded. Nothing is put in Cloudinary that no teardown would remove.
+- **Payroll** is never generated, and the 200-employee NFR-7 performance dataset is explicitly out of scope — that's a separate job, and one that must never share a database with real records.
+
+### Safety
+
+- **Plan by default.** Without `--yes` it reads and reports, writing nothing.
+- **The target is printed first**, every time, before any write — same as the migration runner, and for the same reason.
+- **Production needs a second flag.** If `NODE_ENV=production` or `DATABASE_URL` is set, `--yes` alone is refused; add `--allow-production` when that's genuinely the intent.
+- **Idempotent**, keyed on email. Re-running reports `exists` for each account and adds nothing.
+
+### Removing the demo accounts
+
+Not automated in v1, on purpose: deleting a user cascades across leave requests, balances, ledger entries, documents and slips through a mix of `CASCADE` and `RESTRICT` foreign keys, and guessing about that inside a script whose whole value is being safe is the wrong trade. To remove them by hand, in this order:
+
+```sql
+-- inspect first
+SELECT id, email FROM users WHERE email LIKE 'demo.%@example.com';
+
+-- then, per id, remove dependents before the user
+DELETE FROM audit_logs WHERE leave_request_id IN (SELECT id FROM leave_requests WHERE employee_id = '<id>');
+DELETE FROM leave_balance_ledger WHERE user_id = '<id>';
+DELETE FROM leave_requests WHERE employee_id = '<id>';
+DELETE FROM notifications WHERE recipient_id = '<id>' OR actor_id = '<id>';
+DELETE FROM leave_balances WHERE user_id = '<id>';
+DELETE FROM users WHERE id = '<id>';
+```
+
+Delete the employee first, then the manager, then HR — a user can't be removed while another still reports to them via `manager_id`.
+
 ## Project layout
 
 ```

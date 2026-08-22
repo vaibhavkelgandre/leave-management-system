@@ -10,6 +10,7 @@
     "migrate": "node src/scripts/runMigrations.js",
     "migrate:status": "node src/scripts/runMigrations.js status",
     "migrate:baseline": "node src/scripts/runMigrations.js baseline",
+    "seed": "node src/scripts/seedDemo.js",
     "test": "cross-env NODE_ENV=test vitest",
     "test:run": "cross-env NODE_ENV=test vitest run",
     "test:watch": "cross-env NODE_ENV=test vitest"

@@ -45,6 +45,22 @@ The two suites run sequentially, deliberately: they compete for the same machine
 produced timeouts that look like real failures. The root `package.json` is only a task runner — each half keeps its
 own dependencies, so `npm install` still belongs in `server/` and `client/`.
 
+## Demo logins
+
+```bash
+npm run seed          # plan only, writes nothing
+npm run seed -- --yes # create what's missing
+```
+
+Creates three accounts — `demo.hr@`, `demo.manager@`, `demo.employee@example.com` — sharing the password you pass in
+`DEMO_PASSWORD` (never defaulted, never committed), wired into a four-level chain under the existing `SUPER_ADMIN`,
+plus a pending/approved/rejected leave request each so every role has something to look at.
+
+It is an **ensure** step, not an environment builder: existing users, leave types, holidays, documents and payroll are
+never created or modified, because both databases already hold real records. Plan-by-default, idempotent, prints its
+target before writing, and needs a second explicit flag to touch anything that looks like production. Full detail —
+including how to remove the accounts by hand — is in [`server/README.md`](server/README.md#7-seed-the-demo-logins).
+
 ---
 
 ## Documentation map
