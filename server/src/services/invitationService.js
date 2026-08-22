@@ -1,11 +1,14 @@
 import {
     insertUser,
     findUserById,
+    findInviteeByEmail,
     setPasswordHashAndActivate,
 } from "../repositories/userRepository.js";
 import { findRoleByName } from "../repositories/roleRepository.js";
 import {
     insertInvitation,
+    findActiveInvitationForUser,
+    reissueActiveInvitation,
     findActiveByTokenHash,
     markAccepted,
 } from "../repositories/invitationRepository.js";
@@ -16,7 +19,8 @@ import { sendEmployeeInviteEmail } from "./mailService.js";
 import { generateSecureToken, hashSecureToken } from "../utils/secureToken.js";
 import { hashPassword } from "../utils/password.js";
 import { signAuthToken } from "../utils/jwt.js";
-import { badRequest, unauthorized } from "../utils/appError.js";
+import { isInActorsHrScope } from "./hrScopeService.js";
+import { badRequest, unauthorized, conflict } from "../utils/appError.js";
 
 // How long an invite link stays valid before the recipient must be re-invited — keeps
 // stale, unused invites from being redeemable indefinitely. Once this lapses the
@@ -28,10 +32,12 @@ import { badRequest, unauthorized } from "../utils/appError.js";
 // a copy of that inbox — a synced phone, a shared mailbox, a mail archive), so
 // the window in which an intercepted copy is still redeemable is the thing
 // worth shrinking. Twelve hours is deliberately not shorter than that: this
-// link is the *only* way into a brand-new account, the account itself is
-// deleted once the link lapses (deleteExpiredInvitees), and there is no
-// resend endpoint — so an over-tight window means HR re-typing the whole
-// employee form, not just re-sending a link.
+// link is the *only* way into a brand-new account and the account itself is
+// deleted once the link lapses (deleteExpiredInvitees). Re-inviting the same
+// address now reissues the link instead of failing (see inviteEmployee), so a
+// lapsed window costs HR a click rather than re-typing the whole employee
+// form — but only until deleteExpiredInvitees removes the account, after which
+// the form really does have to be filled in again.
 //
 // Three properties do the rest of the work and are all enforced elsewhere:
 // the token is stored only as a SHA-256 hash (`generateSecureToken`), it is
@@ -82,7 +88,144 @@ function inviteLinkFor(rawToken) {
 //
 // Failure modes: 400 for an unknown role or an illegal manager assignment.
 // A mail failure is deliberately *not* one of them — see the send below.
-export async function inviteEmployee({ firstName, lastName, email, role, managerId }, invitedByUserId) {
+// Builds the invite link and emails it — shared by a first invite and a
+// reissue so the two can't drift apart in how they deliver, log or report
+// failure.
+//
+// Input: the recipient's address/first name/role label, the raw token, the TTL
+// in hours, and the id of the HR admin acting (used only to name them in the
+// email). Output: `{ inviteLink, emailSent }` — `inviteLink` is `null` when
+// CLIENT_BASE_URL isn't configured, and `emailSent` is false whenever the send
+// was skipped, refused or threw.
+//
+// Deliberately never throws: by the time this runs the account and its
+// invitation row are already committed, so failing here would show HR an error
+// beside an employee who *was* created, while the returned link still works.
+async function deliverInvite({ to, firstName, role, rawToken, ttlHours, actorId }) {
+    const inviteLink = inviteLinkFor(rawToken);
+
+    if (process.env.NODE_ENV !== "production") {
+        console.log(`Invite link for ${to}: ${inviteLink}`);
+    }
+
+    if (!inviteLink) {
+        // Nothing to email and nothing HR can share, but the account and its
+        // invitation row are already written — reporting that plainly beats
+        // throwing and leaving a stranded INVITED user with no explanation.
+        console.error("CLIENT_BASE_URL is not set — cannot build an invite link");
+        return { inviteLink: null, emailSent: false };
+    }
+
+    // Awaited, unlike the password-reset send: there's no account-enumeration
+    // concern here (the caller is an authenticated HR admin who already knows
+    // this account exists — they just created it, or are resending to it), and
+    // HR needs the answer to know whether to fall back to sharing the link by
+    // hand. The mailer's own timeouts cap the wait at ~10s.
+    let emailSent = false;
+    try {
+        const invitedBy = actorId ? await findUserById(actorId) : null;
+        emailSent = await sendEmployeeInviteEmail({
+            to,
+            firstName,
+            role,
+            inviteLink,
+            expiresInHours: ttlHours,
+            invitedByName: invitedBy ? `${invitedBy.first_name} ${invitedBy.last_name}`.trim() : null,
+        });
+    } catch (error) {
+        // inviteLink is deliberately absent from this log: it's a live
+        // credential, and application logs are the one place it shouldn't be
+        // duplicated to.
+        console.error(`Failed to send invite email to ${to}:`, error.message);
+    }
+
+    return { inviteLink, emailSent };
+}
+
+// Re-sends a pending employee's invite with a fresh token, superseding the old
+// one in place.
+//
+// Input: the existing `users` row (status INVITED) and the acting HR-tier user.
+// Output: the same shape as a first invite, with `reissued: true`.
+// Throws 409 if the caller isn't entitled to reissue this particular invite.
+//
+// Why this exists at all: the invite link is emailed, so it lands in spam, gets
+// deleted, or is simply ignored — and before this, re-inviting the same address
+// hit the users-email unique index and surfaced as errorHandler's generic
+// "a record with these details already exists". With no resend endpoint, and
+// the pending account only removed once deleteExpiredInvitees runs (12h by
+// default), HR had no way to recover for the rest of the day.
+//
+// Deliberately reissues against the stored row *unchanged* — the name, role and
+// reporting line submitted with a re-invite are ignored rather than applied.
+// Editing those is a different intent with its own endpoint
+// (PATCH /users/:id/manager), and silently rewriting an employee's role as a
+// side effect of "send that link again" is the kind of surprise that's hard to
+// notice and harder to explain. The client says so explicitly.
+async function reissueInvitation(existingUser, actor) {
+    const invitation = await findActiveInvitationForUser(existingUser.id);
+
+    // Creator, or anyone whose HR scope already covers this person — the same
+    // rule as changeManager/changeStatus, and for the same reason: creator-only
+    // leaves an HR admin unable to act on accounts they inherited rather than
+    // created. An invitation row with no recorded inviter falls back to the
+    // scope check alone.
+    const isCreator = Boolean(invitation?.invited_by) && invitation.invited_by === actor?.id;
+    if (!isCreator && !(await isInActorsHrScope(actor, existingUser.id))) {
+        // 409, not 403/404: the caller asked to create an account for an
+        // address that's taken, which is exactly what a conflict is. It also
+        // reveals no more than the generic unique-violation 409 it replaced —
+        // that the address is in use — while saying nothing about whose branch
+        // the pending invite belongs to.
+        throw conflict("This email already has a pending invitation");
+    }
+
+    const user = await findUserById(existingUser.id);
+    const ttlHours = inviteTtlHours();
+    const { rawToken, tokenHash } = generateSecureToken();
+    const expiresAt = new Date(Date.now() + ttlHours * 60 * 60 * 1000);
+
+    // Supersedes the previous token, so any copy of the old link is dead from
+    // here on — the point of a resend is one live credential, not two.
+    await reissueActiveInvitation({
+        userId: user.id,
+        tokenHash,
+        invitedBy: actor?.id,
+        expiresAt,
+    });
+
+    // No notifyTeamMemberAssigned and no seedBalancesForUser here: the manager
+    // was told when the invite was first created, and the balances already
+    // exist. A resend is a new link, not a new employee.
+    const { inviteLink, emailSent } = await deliverInvite({
+        to: user.email,
+        firstName: user.first_name,
+        role: user.role,
+        rawToken,
+        ttlHours,
+        actorId: actor?.id,
+    });
+
+    return { user, inviteLink, emailSent, expiresAt, reissued: true };
+}
+
+export async function inviteEmployee({ firstName, lastName, email, role, managerId }, actor) {
+    // Checked before the role/manager validation below, because for a pending
+    // re-invite none of those submitted values are used — see
+    // reissueInvitation's note on ignoring them.
+    const existing = await findInviteeByEmail(email);
+    if (existing) {
+        if (existing.status !== "INVITED") {
+            // An active (or deactivated) account is a genuine duplicate, not a
+            // resend: whoever holds this address can already sign in, or has
+            // been switched off on purpose. Distinguished from the pending case
+            // because HR's next step differs — find them in the employee list,
+            // rather than resend a link.
+            throw conflict("An account with this email already exists");
+        }
+        return reissueInvitation(existing, actor);
+    }
+
     const roleRecord = await findRoleByName(role);
     if (!roleRecord) {
         throw badRequest("Unknown role");
@@ -113,7 +256,7 @@ export async function inviteEmployee({ firstName, lastName, email, role, manager
     // side fires here; see notifyInviteAccepted below for HR's side, which
     // fires once the account is actually active).
     if (resolvedManagerId) {
-        await notifyTeamMemberAssigned(user, resolvedManagerId, invitedByUserId);
+        await notifyTeamMemberAssigned(user, resolvedManagerId, actor?.id);
     }
 
     const ttlHours = inviteTtlHours();
@@ -123,53 +266,20 @@ export async function inviteEmployee({ firstName, lastName, email, role, manager
     await insertInvitation({
         userId: user.id,
         tokenHash,
-        invitedBy: invitedByUserId,
+        invitedBy: actor?.id,
         expiresAt,
     });
 
-    const inviteLink = inviteLinkFor(rawToken);
+    const { inviteLink, emailSent } = await deliverInvite({
+        to: email,
+        firstName,
+        role,
+        rawToken,
+        ttlHours,
+        actorId: actor?.id,
+    });
 
-    if (process.env.NODE_ENV !== "production") {
-        console.log(`Invite link for ${email}: ${inviteLink}`);
-    }
-
-    if (!inviteLink) {
-        // Nothing to email and nothing HR can share, but the account and its
-        // invitation row are already written — reporting that plainly beats
-        // throwing and leaving a stranded INVITED user with no explanation.
-        console.error("CLIENT_BASE_URL is not set — cannot build an invite link");
-        return { user, inviteLink: null, emailSent: false, expiresAt };
-    }
-
-    // Awaited, unlike the password-reset send: there's no account-enumeration
-    // concern here (the caller is an authenticated HR admin who already knows
-    // this account exists — they just created it), and HR needs the answer to
-    // know whether to fall back to sharing the link by hand. The mailer's own
-    // timeouts cap the wait at ~10s.
-    //
-    // Never fatal: the account, its leave balances and its invitation row are
-    // all committed by now, so throwing would leave HR looking at an error
-    // beside an employee who *was* in fact created — and the link in the
-    // response is still a working way to onboard them.
-    let emailSent = false;
-    try {
-        const invitedBy = invitedByUserId ? await findUserById(invitedByUserId) : null;
-        emailSent = await sendEmployeeInviteEmail({
-            to: email,
-            firstName,
-            role,
-            inviteLink,
-            expiresInHours: ttlHours,
-            invitedByName: invitedBy ? `${invitedBy.first_name} ${invitedBy.last_name}`.trim() : null,
-        });
-    } catch (error) {
-        // inviteLink is deliberately absent from this log: it's a live
-        // credential, and application logs are the one place it shouldn't be
-        // duplicated to.
-        console.error(`Failed to send invite email to ${email}:`, error.message);
-    }
-
-    return { user, inviteLink, emailSent, expiresAt };
+    return { user, inviteLink, emailSent, expiresAt, reissued: false };
 }
 
 // Checks an invite link is still valid (unexpired, not already accepted) before showing

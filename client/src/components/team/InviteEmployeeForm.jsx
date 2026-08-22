@@ -243,9 +243,24 @@ export function InviteEmployeeForm({ onInvited, secondaryAction }) {
                 >
                     <p className="font-medium">
                         {inviteResult.emailSent
-                            ? `Invited. We emailed the link to ${inviteResult.user?.email ?? "them"}.`
-                            : "Invited, but the email wasn't sent — share this link with them yourself:"}
+                            ? `${inviteResult.reissued ? "Invitation resent" : "Invited"}. We emailed the link to ${
+                                  inviteResult.user?.email ?? "them"
+                              }.`
+                            : `${
+                                  inviteResult.reissued ? "New link created" : "Invited"
+                              }, but the email wasn't sent — share this link with them yourself:`}
                     </p>
+                    {/* Only shown for a resend, and it isn't a nicety: the
+                        server reissues against the stored row and ignores the
+                        name/role/reporting line submitted with it, so anything
+                        HR retyped in this form was silently not applied.
+                        Saying so here is the only place they'd find out. */}
+                    {inviteResult.reissued && (
+                        <p className="mt-2 text-xs">
+                            This address already had a pending invitation, so the previous link stopped working. Their
+                            existing name, role and reporting line were kept — change those from My Team.
+                        </p>
+                    )}
                     {inviteResult.inviteLink ? (
                         <>
                             {inviteResult.emailSent && (

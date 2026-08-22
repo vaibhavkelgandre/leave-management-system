@@ -225,6 +225,57 @@ describe("InviteEmployeeForm", () => {
         expect(screen.getByText(/abc123/)).toBeInTheDocument();
     });
 
+    // A resend is the same request with a different outcome, so the panel has
+    // to say which one happened — and, more importantly, that the details typed
+    // into the form were not applied (the server reissues against the stored
+    // row). Without that line HR has no way to know their edit was ignored.
+    it("says an invitation was resent, and that the typed details were not applied", async () => {
+        userService.getUserOptions.mockResolvedValue([makeUser({ id: "mgr-1", role: ROLES.MANAGER })]);
+        userService.inviteEmployee.mockResolvedValue({
+            user: makeUser({ id: "new-1", email: "pending@example.com" }),
+            inviteLink: "http://localhost:5173/invite/fresh456",
+            emailSent: true,
+            reissued: true,
+        });
+
+        renderForm();
+        await screen.findByLabelText(/first name/i);
+
+        await userEvent.type(screen.getByLabelText(/first name/i), "New");
+        await userEvent.type(screen.getByLabelText(/last name/i), "Hire");
+        await userEvent.type(screen.getByLabelText(/email/i), "pending@example.com");
+        await userEvent.selectOptions(screen.getByLabelText(/manager/i), "mgr-1");
+        await userEvent.click(screen.getByRole("button", { name: /^invite$/i }));
+
+        expect(await screen.findByText(/invitation resent/i)).toBeInTheDocument();
+        expect(screen.getByText(/previous link stopped working/i)).toBeInTheDocument();
+        expect(screen.getByText(/existing name, role and reporting line were kept/i)).toBeInTheDocument();
+        expect(screen.getByText(/fresh456/)).toBeInTheDocument();
+    });
+
+    it("says nothing about resending for an ordinary first invite", async () => {
+        userService.getUserOptions.mockResolvedValue([makeUser({ id: "mgr-1", role: ROLES.MANAGER })]);
+        userService.inviteEmployee.mockResolvedValue({
+            user: makeUser({ id: "new-1", email: "new@example.com" }),
+            inviteLink: "http://localhost:5173/invite/abc123",
+            emailSent: true,
+            reissued: false,
+        });
+
+        renderForm();
+        await screen.findByLabelText(/first name/i);
+
+        await userEvent.type(screen.getByLabelText(/first name/i), "New");
+        await userEvent.type(screen.getByLabelText(/last name/i), "Hire");
+        await userEvent.type(screen.getByLabelText(/email/i), "new@example.com");
+        await userEvent.selectOptions(screen.getByLabelText(/manager/i), "mgr-1");
+        await userEvent.click(screen.getByRole("button", { name: /^invite$/i }));
+
+        expect(await screen.findByText(/we emailed the link to new@example.com/i)).toBeInTheDocument();
+        expect(screen.queryByText(/resent/i)).not.toBeInTheDocument();
+        expect(screen.queryByText(/were kept/i)).not.toBeInTheDocument();
+    });
+
     it("warns when the server couldn't build an invite link at all", async () => {
         userService.getUserOptions.mockResolvedValue([makeUser({ id: "mgr-1", role: ROLES.MANAGER })]);
         userService.inviteEmployee.mockResolvedValue({

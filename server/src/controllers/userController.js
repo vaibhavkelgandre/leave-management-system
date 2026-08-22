@@ -4,11 +4,19 @@ import * as reportingService from "../services/reportingService.js";
 import { sendSuccess } from "../utils/apiResponse.js";
 
 // HR-only action to onboard a new employee/manager — there is no public registration,
-// so this is how every non-HR account gets created.
+// so this is how every non-HR account gets created. Re-inviting an address that
+// already has a pending invite reissues its link instead of failing, so the
+// message and status code follow `reissued` rather than being fixed: 200 for a
+// resend (nothing was created) and 201 for a genuinely new account.
+//
+// Passes the whole `req.user`, not just the id: reissuing is scoped to the
+// invite's creator or the caller's own HR scope, which needs their role.
 export async function inviteEmployee(req, res, next) {
     try {
-        const result = await invitationService.inviteEmployee(req.body, req.user.id);
-        sendSuccess(res, 201, "Employee invited", result);
+        const result = await invitationService.inviteEmployee(req.body, req.user);
+        const status = result.reissued ? 200 : 201;
+        const message = result.reissued ? "Invitation resent" : "Employee invited";
+        sendSuccess(res, status, message, result);
     } catch (error) {
         next(error);
     }

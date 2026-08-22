@@ -146,4 +146,33 @@ describe("Invite email delivery", () => {
         expect(response.statusCode).toBe(201);
         expect(response.body.data.emailSent).toBe(false);
     });
+
+    it("emails the invitee a fresh link when HR resends a pending invitation", async () => {
+        // Lives here rather than in invitationFlow.test.js because only this
+        // file mocks mailService — config/mailer.js hard-returns under
+        // NODE_ENV=test, so emailSent is always false without the mock.
+        const hr = await createRootHr({ email: "resend-mail-hr@example.com" });
+        const hrAgent = await loginAs(hr);
+
+        const first = await invite(hrAgent, { managerId: hr.id });
+        expect(first.statusCode).toBe(201);
+        expect(sendEmployeeInviteEmail).toHaveBeenCalledTimes(1);
+        const firstLink = sendEmployeeInviteEmail.mock.calls[0][0].inviteLink;
+
+        const second = await invite(hrAgent, { managerId: hr.id });
+
+        expect(second.statusCode).toBe(200);
+        expect(second.body.data.emailSent).toBe(true);
+        expect(sendEmployeeInviteEmail).toHaveBeenCalledTimes(2);
+
+        const resent = sendEmployeeInviteEmail.mock.calls[1][0];
+        expect(resent.to).toBe("invitee@example.com");
+        expect(resent.inviteLink).not.toBe(firstLink);
+        // Same template as a first invite, deliberately: the recipient may
+        // never have seen the original, so "you've been invited" is still the
+        // accurate thing to say, and a second template would need its own
+        // feature flag for no gain.
+        expect(resent.firstName).toBe("New");
+        expect(resent.expiresInHours).toBeGreaterThan(0);
+    });
 });

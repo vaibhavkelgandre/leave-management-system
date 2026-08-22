@@ -1,9 +1,12 @@
 import pool from "../config/db.js";
 
 // `invited_by` is a scalar subquery, not a JOIN, so a user with more than one
-// invitations row (not possible today — there's no resend/re-invite feature
-// yet — but defensive regardless) can never multiply this user into extra
-// rows the way a LEFT JOIN would. `ORDER BY created_at ASC LIMIT 1` picks the
+// invitations row can never multiply this user into extra rows the way a LEFT
+// JOIN would. Re-inviting a pending employee exists now
+// (invitationService.inviteEmployee) and deliberately *updates* the live row
+// rather than inserting a second one, so today there's still only ever one row
+// per user — this stays defensive rather than load-bearing.
+// `ORDER BY created_at ASC LIMIT 1` picks the
 // original invite if that ever changes. NULL for anyone who registered
 // through a path with no invitation row at all (the root HR_ADMIN via
 // POST /auth/register/hr) — used by userService.changeManager to restrict
@@ -140,6 +143,19 @@ export async function findPasswordHashById(id) {
     return result.rows[0]?.password_hash ?? null;
 }
 
+// Minimal by-email lookup for the invite flow's "does this address already
+// exist" branch.
+// Input: an email (matched case-insensitively, the same way uq_users_email_lower
+// enforces uniqueness). Output: `{ id, status }` or `null`.
+//
+// Deliberately not findAuthByEmail, which is otherwise the same query: that one
+// selects password_hash, and there's no reason for a hash to travel into the
+// invitation service just to answer a yes/no question.
+export async function findInviteeByEmail(email) {
+    const result = await pool.query("SELECT id, status FROM users WHERE lower(email) = lower($1)", [email]);
+    return result.rows[0] || null;
+}
+
 export async function findAuthByEmail(email) {
     const result = await pool.query(
         `SELECT u.id, u.email, u.password_hash, u.status, r.role_name AS role, u.manager_id
@@ -169,7 +185,11 @@ export async function countUsers() {
 
 // Used by authService.registerHrRoot's singleton guard — SUPER_ADMIN may
 // only ever be created once, so the bootstrap route checks this before
-// inserting a second one.
+// inserting a second one. Deliberately not the guarantee itself: this is a
+// check-then-insert, so the real enforcement is the partial unique index
+// uq_users_single_super_admin (migration 038), which two simultaneous
+// bootstraps cannot both pass. This check stays because it produces a clear
+// 409 for the ordinary sequential case without reaching the insert at all.
 export async function existsUserWithRole(roleId) {
     const result = await pool.query("SELECT EXISTS (SELECT 1 FROM users WHERE role_id = $1) AS role_exists", [
         roleId,

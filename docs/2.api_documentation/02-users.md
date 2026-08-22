@@ -12,9 +12,20 @@ Every route below requires `requireAuth` (a valid session cookie).
 
 HR invites a new employee/manager/HR admin. Creates a `status: "INVITED"` user with no password, generates a single-use invite token, **emails the invite link to the invitee**, and also returns that link to HR as a fallback.
 
-The link is valid for `INVITE_TOKEN_TTL_HOURS` (default **12**, clamped to **1-72** in code — an unparseable or out-of-range value falls back to the default rather than being trusted). Shortened from 24 hours now that the link is delivered by email and therefore sits in an inbox. If it isn't accepted in that window the pending account is **deleted** — the person disappears from `GET /api/users` and their email becomes available to invite again. There is no resend endpoint, so an expired invite means filling in the invite form again. See [Invite expiry](#invite-expiry).
+The link is valid for `INVITE_TOKEN_TTL_HOURS` (default **12**, clamped to **1-72** in code — an unparseable or out-of-range value falls back to the default rather than being trusted). Shortened from 24 hours now that the link is delivered by email and therefore sits in an inbox. If it isn't accepted in that window the pending account is **deleted** — the person disappears from `GET /api/users` and their email becomes available to invite again. See [Invite expiry](#invite-expiry).
 
 **Email delivery** is controlled by `MAIL_FEATURE_EMPLOYEE_INVITE` (and the global `MAIL_ENABLED`) — see `server/src/config/mailFeatures.js`. `emailSent` in the response is `true` only when the message actually reached the mail transport; it is `false` when the mail provider is unconfigured, the flag is off, or the send failed. **A mail failure never fails the request** — the account, its leave balances and its invitation row are all committed before the send, and the returned `inviteLink` still works. `inviteLink` is `null` in the one case where the server couldn't build a URL at all (`CLIENT_BASE_URL` unset).
+
+**Re-inviting the same address is a resend, not an error.** Posting an email that already belongs to a `status: "INVITED"` user issues a **new** token, expires the old one immediately (any copy of the previous link stops working), re-sends the email and answers **`200` with `reissued: true`** — a first invite answers `201` with `reissued: false`. There is no separate resend endpoint; this *is* the resend, because the case it exists for is HR clicking Invite again after the email went to spam or was deleted.
+
+Two things about it are deliberate:
+
+- **The reissue is against the stored row, unchanged.** `firstName`, `lastName`, `role` and `managerId` in the body are **ignored** on this path — the response echoes the values already on record. Editing those is a different intent with its own endpoint (`PATCH /:id/manager`), and rewriting someone's role as a side effect of "send that link again" would be near-impossible to notice. The client says so explicitly in its success message. (The body is still validated, so a resend must still be a well-formed invite request.)
+- **`invited_by` never changes.** It's the creator attribution that governs `PATCH /:id/manager` and `PATCH /:id/status`, so a colleague resending a link does not become the person who hired them.
+
+**Who may resend:** the original inviter (`invited_by`), or any HR-tier caller whose own scope already covers that person — the same "creator or in-my-HR-scope" rule as `PATCH /:id/manager`. Note scope is a *downward* subtree walk, so an HR admin **above** the invitee in the chain isn't in scope through that route (only through being the creator). Anyone else gets `409 This email already has a pending invitation`, which reveals no more than the duplicate-email conflict it replaced, and — importantly — leaves the existing link alive.
+
+An **already-lapsed** invitation whose account hasn't been swept yet is also reissued rather than refused: the token is dead but the email is still taken, so before this the address was unusable until `deleteExpiredInvitees` ran.
 
 **Auth**: `HR_ADMIN` only.
 
@@ -30,7 +41,7 @@ The link is valid for `INVITE_TOKEN_TTL_HOURS` (default **12**, clamped to **1-7
 ```
 For `role: "HR_ADMIN"`, `managerId` must be another `HR_ADMIN`'s id — the new HR admin reports to whoever created them (defaults to the inviter themself in the UI, but any other `HR_ADMIN` may be picked instead). This is also what populates `invited_by` on the new user (see `GET /api/users` above), which later governs who may edit that HR admin's own `manager_id` (see `PATCH /:id/manager` below).
 
-**Response** `201`
+**Response** `201` — a new account was created.
 ```json
 {
   "success": true,
@@ -39,12 +50,15 @@ For `role: "HR_ADMIN"`, `managerId` must be another `HR_ADMIN`'s id — the new 
     "user": { "id": "...", "first_name": "...", "last_name": "...", "email": "...", "role_id": "...", "manager_id": "...", "status": "INVITED", "created_at": "...", "updated_at": "..." },
     "inviteLink": "http://localhost:5173/invite/<token>",
     "emailSent": true,
-    "expiresAt": "2026-08-20T21:30:00.000Z"
+    "expiresAt": "2026-08-20T21:30:00.000Z",
+    "reissued": false
   }
 }
 ```
 
-**Errors**: `400` unknown role / manager not found / manager's role doesn't satisfy the hierarchy rule (see Conventions — e.g. `managerId` pointing to a `MANAGER` when `role: "HR_ADMIN"`) · `401` not logged in · `403` caller isn't `HR_ADMIN` · `422` validation (e.g. missing `managerId` for an `EMPLOYEE` or `HR_ADMIN`).
+**Response** `200` — an existing pending invitation was resent. Same envelope, `message: "Invitation resent"`, `reissued: true`, a fresh `inviteLink`/`expiresAt`, and `user` carrying the **stored** name/role/manager rather than whatever was posted. `200` rather than `201` because nothing was created.
+
+**Errors**: `400` unknown role / manager not found / manager's role doesn't satisfy the hierarchy rule (see Conventions — e.g. `managerId` pointing to a `MANAGER` when `role: "HR_ADMIN"`) · `401` not logged in · `403` caller isn't `HR_ADMIN` · **`409`** `An account with this email already exists` (the address belongs to an `ACTIVE`/`INACTIVE` account — a genuine duplicate, so HR's next step is the employee list, not a resend) **or** `This email already has a pending invitation` (a pending invite the caller isn't entitled to resend) · `422` validation (e.g. missing `managerId` for an `EMPLOYEE` or `HR_ADMIN`).
 
 ---
 
