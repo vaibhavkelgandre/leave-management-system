@@ -115,15 +115,31 @@ export async function registerHrRoot({ registrationCode, firstName, lastName, em
     // SUPER_ADMIN never has a manager — it's the true root of the reporting
     // tree, deliberately outside it the same way the old root HR_ADMIN was.
     const passwordHash = await hashPassword(password);
-    const user = await insertUser({
-        firstName,
-        lastName,
-        email,
-        passwordHash,
-        roleId: role.id,
-        managerId: null,
-        status: "ACTIVE",
-    });
+    let user;
+    try {
+        user = await insertUser({
+            firstName,
+            lastName,
+            email,
+            passwordHash,
+            roleId: role.id,
+            managerId: null,
+            status: "ACTIVE",
+        });
+    } catch (error) {
+        // uq_users_single_super_admin (migration 038) is what actually
+        // guarantees the singleton: the existsUserWithRole check above is a
+        // check-then-insert, so two simultaneous bootstraps can both pass it
+        // before either commits, and the index rejects the second insert.
+        // Answered with the same message the sequential case gives, rather
+        // than letting errorHandler's generic unique-violation branch report
+        // "a record with these details already exists" — which reads as an
+        // email clash and tells the caller nothing about the real reason.
+        if (error.code === "23505" && error.constraint === "uq_users_single_super_admin") {
+            throw conflict("A super admin account already exists");
+        }
+        throw error;
+    }
 
     // No one is positioned to verify SUPER_ADMIN's profile (they have no
     // manager, and the whole point of this role is that nobody sits above

@@ -1,6 +1,7 @@
 import request from "supertest";
 import { describe, it, expect } from "vitest";
 import app from "../../app.js";
+import pool from "../../config/db.js";
 
 const REG_CODE = process.env.HR_REGISTRATION_CODE;
 
@@ -66,5 +67,44 @@ describe("POST /api/auth/register/hr", () => {
             password: "Password123!",
         });
         expect(stillOnlyOne.statusCode).toBe(409);
+    });
+
+    // The sequential test above is satisfied by registerHrRoot's
+    // existsUserWithRole check alone. This one isn't: both requests pass that
+    // check (it runs before the bcrypt hash, so neither has inserted yet by
+    // the time the other looks) and only uq_users_single_super_admin
+    // (migration 038) can separate them. Without that index both inserts
+    // commit and the singleton is silently two accounts.
+    it("rejects the loser of two simultaneous bootstraps instead of creating two super admins", async () => {
+        const bootstrap = (email) =>
+            request(app).post("/api/auth/register/hr").send({
+                registrationCode: REG_CODE,
+                firstName: "Root",
+                lastName: "Admin",
+                email,
+                password: "Password123!",
+            });
+
+        const [first, second] = await Promise.all([
+            bootstrap("race-one@example.com"),
+            bootstrap("race-two@example.com"),
+        ]);
+
+        // Which request wins is genuinely undecided, so assert on the pair.
+        expect([first.statusCode, second.statusCode].sort()).toEqual([201, 409]);
+
+        // The loser gets the same message as a sequential second attempt, not
+        // the generic "a record with these details already exists" that an
+        // unmapped unique violation would produce.
+        const loser = first.statusCode === 409 ? first : second;
+        expect(loser.body.success).toBe(false);
+        expect(loser.body.message).toBe("A super admin account already exists");
+
+        const { rows } = await pool.query(
+            `SELECT COUNT(*)::int AS count
+             FROM users u JOIN roles r ON r.id = u.role_id
+             WHERE r.role_name = 'SUPER_ADMIN'`
+        );
+        expect(rows[0].count).toBe(1);
     });
 });

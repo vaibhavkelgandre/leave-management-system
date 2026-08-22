@@ -27,7 +27,7 @@ The four fixed roles the whole authorization system hinges on (`requireRole` mid
 ---
 
 ### 👤 `users`
-*Migrations: `004_create_users.sql`, `005_alter_users_for_auth.sql`, `020_alter_users_add_profile_fields.sql`, `022_alter_users_profile_v2.sql`*
+*Migrations: `004_create_users.sql`, `005_alter_users_for_auth.sql`, `020_alter_users_add_profile_fields.sql`, `022_alter_users_profile_v2.sql`, `038_unique_super_admin_user.sql`*
 
 Every person in the system — HR admins, managers, and employees are all rows here, distinguished only by `role_id`. Managers are modeled as a self-referencing tree via `manager_id` (see `reportingService.js` for the cycle-prevention logic). `022` replaced `020`'s initial 10-column profile sketch (`address`, single emergency contact) with the fuller set below, matched to a real onboarding spreadsheet.
 
@@ -68,7 +68,9 @@ Every person in the system — HR admins, managers, and employees are all rows h
 | `profile_send_back_at` | `TIMESTAMP` | nullable | |
 | `created_at` / `updated_at` | `TIMESTAMP` | default now | |
 
-**Indexes:** unique on `lower(email)`, plain index on `manager_id` (reporting-tree lookups), partial unique on `employee_code` (where not null).
+**Indexes:** unique on `lower(email)`, plain index on `manager_id` (reporting-tree lookups), partial unique on `employee_code` (where not null), and partial unique `uq_users_single_super_admin` on `role_id` **where `role_id` is the `SUPER_ADMIN` role** — at most one super admin can ever exist.
+
+> ℹ️ **`uq_users_single_super_admin` is the only index in this schema whose definition differs per database, and that's unavoidable.** An index predicate must be immutable, so it can't contain `role_id = (SELECT id FROM roles WHERE role_name = 'SUPER_ADMIN')`; `038` resolves that id at migration time and interpolates it as a literal inside a `DO` block. Expect a different UUID in the predicate in dev, `_test` and production. It also means the index guards nothing if the `SUPER_ADMIN` role row is ever deleted and recreated with a fresh id — and that `038` will fail outright on a database that already holds two super admins (e.g. a bootstrapped one plus one promoted by hand), which is the right failure: demote one first.
 
 > ℹ️ No format `CHECK` constraints on the self-editable fields above beyond `marital_status`/`profile_status` (PAN pattern, Aadhar digit count, date formats, etc.) — those live in `profileValidator.js`'s zod schema instead, so they stay cheap to change without a migration. No encryption-at-rest for `pan_number`/`aadhar_number`/`passport_number`/`bank_*` — masking is application-layer only (see `docs/2.api_documentation.md`'s `GET /api/users` note).
 

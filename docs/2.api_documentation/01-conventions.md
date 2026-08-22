@@ -40,7 +40,7 @@ Liveness probe. No auth, no DB call.
 
 ### `POST /api/auth/register/hr`
 
-Creates the single `SUPER_ADMIN` account, gated by a shared secret — **singleton**: rejects with `409` if one already exists. Formerly created an unlimited number of manager-less root `HR_ADMIN` accounts; repurposed so the true top of the reporting tree is created exactly once. Always creates the account with `manager_id: null`, and `profile_status: 'VERIFIED'` immediately — nobody is positioned to verify SUPER_ADMIN's own profile, so it skips the normal `INCOMPLETE -> SUBMITTED -> VERIFIED` workflow entirely.
+Creates the single `SUPER_ADMIN` account, gated by a shared secret — **singleton**: rejects with `409` if one already exists. That `409` is guaranteed, not best-effort: since migration `038` the singleton is enforced by a partial unique index (`uq_users_single_super_admin`), so two simultaneous calls resolve to exactly one `201` and one `409` rather than both succeeding. Formerly created an unlimited number of manager-less root `HR_ADMIN` accounts; repurposed so the true top of the reporting tree is created exactly once. Always creates the account with `manager_id: null`, and `profile_status: 'VERIFIED'` immediately — nobody is positioned to verify SUPER_ADMIN's own profile, so it skips the normal `INCOMPLETE -> SUBMITTED -> VERIFIED` workflow entirely.
 
 **Auth**: none (public), but requires the correct `registrationCode`.
 
