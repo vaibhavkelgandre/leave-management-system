@@ -18,6 +18,33 @@ cd client && npm install && npm run dev
 The backend needs a PostgreSQL database before it will start. See [`server/README.md`](server/README.md) for
 environment variables, database setup and migrations.
 
+## Running the tests
+
+One command, from the repository root:
+
+```bash
+npm test
+```
+
+That runs the server suite and then the client suite, in that order, and fails if either does. Either half alone:
+
+```bash
+npm run test:server
+```
+
+```bash
+npm run test:client
+```
+
+**Two prerequisites for the server half**, both one-time: `server/.env.test` must point `DB_NAME` at a database whose
+name ends in `_test` (the suite refuses to run otherwise, so it can never truncate your development data), and that
+database must have the migrations applied — `DB_NAME=<your>_test npm run migrate` from `server/`. A suite failing on
+every file with a missing-column error almost always means the `_test` database is a migration behind.
+
+The two suites run sequentially, deliberately: they compete for the same machine, and running them at once has
+produced timeouts that look like real failures. The root `package.json` is only a task runner — each half keeps its
+own dependencies, so `npm install` still belongs in `server/` and `client/`.
+
 ---
 
 ## Documentation map
@@ -54,7 +81,7 @@ docs/     see the map above
 | | |
 |---|---|
 | Roles | `EMPLOYEE`, `MANAGER`, `HR_ADMIN`, singleton `SUPER_ADMIN` |
-| Migrations | 37, tracked in a `schema_migrations` ledger, applied manually per environment |
-| Tests | 312 server (integration, real Postgres) · 431 client |
+| Migrations | 38, tracked in a `schema_migrations` ledger, applied manually per environment |
+| Tests | 333 server (integration, real Postgres) · 433 client — `npm test` from the root |
 | Mail | SendGrid over HTTPS — three flows, each behind a feature flag |
 | Storage | Cloudinary, for employee documents |

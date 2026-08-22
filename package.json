@@ -1,0 +1,13 @@
+{
+    "name": "leave-management-system",
+    "version": "1.0.0",
+    "private": true,
+    "description": "Leave Management System — Express/PostgreSQL API and React client. This root package exists only to give the whole repository one documented test command; each half keeps its own dependencies.",
+    "scripts": {
+        "test": "npm run test:server && npm run test:client",
+        "test:server": "npm --prefix server run test:run",
+        "test:client": "npm --prefix client run test -- --run",
+        "migrate": "npm --prefix server run migrate",
+        "migrate:status": "npm --prefix server run migrate:status"
+    }
+}
