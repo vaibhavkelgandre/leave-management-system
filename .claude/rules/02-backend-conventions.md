@@ -157,7 +157,20 @@
 > ⏱️ **The `testTimeout`/`hookTimeout` values in both vitest configs are deliberate — don't delete them as noise, and don't raise them to hide a hang.** Vitest defaults to 5s per test and 10s per hook, which suits unit tests and sits *below* this project's normal operating range: server files are integration-level against a real Postgres and honestly take 10–20s each, `setup.js`'s `beforeEach` truncates twelve tables with `CASCADE`, and one client `userEvent.type` of a sentence is dozens of sequential React renders in jsdom. Under contention the defaults expire on work that is progressing perfectly well, which reads as a real failure and sends the next person hunting a bug that doesn't exist — that is exactly how they were found. Now 30s/30s (server) and 15s (client).
 > - **The cost is accepted, not overlooked:** a genuinely hung test takes 30s to report instead of 5s. If a test starts *needing* the extra headroom, that's a signal about the test, not a reason to raise the ceiling again.
 > - **Verify a timeout change with a throwaway probe that exceeds the old value, then delete it.** A config value that parses tells you nothing about whether it applies; a 12s hook and a 7s test do.
-> - **Never run the server and client suites concurrently on one machine.** That is what produced the two red tests above, and both passed in isolation. Run them one after the other.
+> - **Never run the server and client suites concurrently on one machine.** That is what produced the two red tests above, and both passed in isolation. Run them one after the other — `npm test` at the root already sequences them with `&&`.
+> - **⚠️ Raising `testTimeout` does nothing for `findBy*` / `waitFor`, and that caught us out.** Testing Library keeps
+>   its own budget, `asyncUtilTimeout`, defaulting to **1000ms** — so a `findByRole` waiting on a mocked fetch fails at
+>   one second no matter what vitest is configured to allow. There are **266 `findBy*` calls** in the client suite, most
+>   of them waiting on exactly that, which makes it the largest single source of load-sensitive flake here:
+>   `DelegationForm`'s "excludes the current user" test failed at 1638ms waiting for a `<select>` to fill, with nothing
+>   wrong with the component or the test. Now `configure({ asyncUtilTimeout: 5000 })` in `client/src/tests/setup.js`.
+>   Kept well below the 15s `testTimeout` on purpose: an element that genuinely never appears then still fails with
+>   Testing Library's "unable to find role=…" plus a DOM dump, rather than a bare vitest timeout that explains nothing.
+> - **The client suite runs on `pool: "threads"`, not vitest's default forks.** Forking one node process per file — 63
+>   of them, each loading Vite's module graph and booting jsdom — failed outright on this machine when the client
+>   suite started straight after the server suite: six `Failed to start forks worker` errors, so **six files never ran
+>   while the run still looked broadly green.** A suite that silently skips files is worse than a slow one. Threads
+>   share the process, so startup survives a machine that's still busy.
 
 > 📅 **A fixture dated relative to the real "today" is a fixture that fails on some day of the week — use
 > `tests/integration/helpers/dates.js`, never raw date arithmetic.** Found the hard way: two `dashboardCounts.test.js`
