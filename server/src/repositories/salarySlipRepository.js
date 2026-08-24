@@ -72,6 +72,33 @@ export async function countSlipsByEmployeeIds(employeeIds, { payPeriod } = {}) {
     return result.rows[0].count;
 }
 
+// Which of the given pay periods already have an issued (ACTIVE) payslip for
+// this employee.
+//
+// Input: a user id and an array of "YYYY-MM" periods. Output: the subset of
+// those periods that have an ACTIVE slip, ascending. Empty array for an empty
+// input, without querying.
+//
+// Backs the per-employee payroll lock (leaveRequestService.assertPeriodsOpen):
+// once a slip is issued for a period, that period's leave record is frozen for
+// that employee, because the slip stored a snapshot of it. VOIDED slips are
+// deliberately excluded — voiding is what reopens a period, and it is the whole
+// correction path.
+export async function findLockedPayPeriodsForEmployee(employeeId, payPeriods) {
+    if (!payPeriods.length) {
+        return [];
+    }
+
+    const result = await pool.query(
+        `SELECT DISTINCT pay_period
+         FROM salary_slips
+         WHERE employee_id = $1 AND status = 'ACTIVE' AND pay_period = ANY($2)
+         ORDER BY pay_period`,
+        [employeeId, payPeriods]
+    );
+    return result.rows.map((row) => row.pay_period);
+}
+
 export async function findSlipById(id) {
     const result = await pool.query(
         `SELECT ${SLIP_COLUMNS}

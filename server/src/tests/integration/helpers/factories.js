@@ -9,6 +9,7 @@ import {
 import { insertHoliday } from "../../../repositories/holidayRepository.js";
 import { insertDelegation } from "../../../repositories/delegationRepository.js";
 import { upsertStructure } from "../../../repositories/salaryStructureRepository.js";
+import { replaceSlipsForPeriod, voidSlip } from "../../../repositories/salarySlipRepository.js";
 import { submitLeaveRequest } from "../../../services/leaveRequestService.js";
 import { hashPassword } from "../../../utils/password.js";
 
@@ -162,4 +163,51 @@ export async function createDelegation({
     endDate = "2027-01-31",
 } = {}) {
     return insertDelegation({ managerId, delegateId, startDate, endDate });
+}
+
+// An issued payslip for one employee and period, written straight through the
+// repository.
+//
+// Input: `{ employeeId, payPeriod, lopDays, netPay, actorId }`. Output: the
+// created slip row.
+//
+// Deliberately not driven through confirmPayroll: that route needs a completed
+// period, a verified profile and a salary structure, none of which a test of
+// the payroll *lock* cares about — it only needs an ACTIVE slip to exist. Tests
+// of payroll generation itself still go through the service.
+export async function createSalarySlip({
+    employeeId,
+    payPeriod = "2026-07",
+    lopDays = 0,
+    netPay = 45825,
+    actorId,
+} = {}) {
+    const [slip] = await replaceSlipsForPeriod({
+        payPeriod,
+        actorId: actorId || employeeId,
+        rows: [
+            {
+                employeeId,
+                basicPay: 30000,
+                hra: 12000,
+                pfEmployeeContribution: 1800,
+                pfEmployerContribution: 1800,
+                esic: 375,
+                specialAllowance: 8000,
+                lopDays,
+                lopDeduction: 0,
+                totalLeaveDays: lopDays,
+                payableDays: 31 - lopDays,
+                incomeTax: 2000,
+                netPay,
+            },
+        ],
+    });
+    return slip;
+}
+
+// Voids a slip, which is what reopens a locked period.
+// Input: a slip id and the actor doing it. Output: the voided row.
+export async function voidSalarySlip(slipId, actorId, reason = "Test void") {
+    return voidSlip(slipId, { voidedBy: actorId, reason });
 }

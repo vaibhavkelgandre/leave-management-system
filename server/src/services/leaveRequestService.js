@@ -38,6 +38,8 @@ import {
 } from "./notificationService.js";
 import { detectFileType } from "../utils/fileType.js";
 import { todayDateKey } from "../utils/dates.js";
+import { payPeriodsInRange, formatPayPeriod } from "../utils/payPeriod.js";
+import { findLockedPayPeriodsForEmployee } from "../repositories/salarySlipRepository.js";
 import { badRequest, conflict, forbidden, notFound } from "../utils/appError.js";
 
 // FR-012 (Module 3, point 2): only these three content types are accepted
@@ -621,6 +623,64 @@ export async function downloadLeaveRequestDocument(actor, requestId) {
 // Output: the updated request. Failure modes: 404/403 from
 // resolveActingCapacity, 409 from assertLegalTransition, or 400 if trying to
 // CANCEL a leave that has already started.
+// Actions that change whether a request counts toward Loss of Pay, and so
+// can invalidate an already-issued payslip.
+//
+// APPROVE and HR_OVERRIDE_TO_APPROVED add days to the LOP total;
+// REJECT and HR_OVERRIDE_TO_REJECTED remove them. WITHDRAW and CANCEL are
+// deliberately absent: WITHDRAW only applies to a SUBMITTED request, which
+// never counted toward LOP in the first place (findLopWorkingDays filters on
+// status = 'APPROVED'), and CANCEL is already refused for any leave that has
+// started — and a payslip only exists for a completed period, so cancellable
+// leave is always in a period no slip covers.
+const LOP_AFFECTING_ACTIONS = new Set([
+    "APPROVE",
+    "REJECT",
+    "HR_OVERRIDE_TO_APPROVED",
+    "HR_OVERRIDE_TO_REJECTED",
+]);
+
+// Refuses a decision that would change the leave record behind a payslip the
+// employee has already been issued.
+//
+// Input: the leave request row and the action being attempted. Output: none.
+// Throws 409 naming the locked period(s) when the employee already holds an
+// ACTIVE slip for any period this request overlaps.
+//
+// Why this exists: a payslip stores lop_days as a snapshot, and payroll only
+// runs for a period that has fully ended — so there is always a window between
+// "the leave happened" and "payroll ran", and any decision landing after the
+// run leaves the slip stating one thing and the leave record another. Nothing
+// reconciled them, and the likely direction was silent overpayment: a request
+// approved late adds LOP days the slip never deducted, and nobody checks a
+// payslip that came out too high.
+//
+// Locking per employee rather than per company is deliberate. The lock is
+// derived from that employee's own ACTIVE slip, so it needs no new table and no
+// close/reopen action, and voiding one person's slip reopens exactly that
+// person — which is already the documented correction path (void, re-run).
+//
+// The refusal is a 409 rather than a 403: nobody lacks permission here, the
+// record is simply in a state that forbids the change. The message names the
+// period and the way out, because a manager hitting this has no idea payroll
+// exists.
+async function assertPeriodsOpen(request, action) {
+    if (!LOP_AFFECTING_ACTIONS.has(action)) {
+        return;
+    }
+
+    const periods = payPeriodsInRange(request.start_date, request.end_date);
+    const locked = await findLockedPayPeriodsForEmployee(request.employee_id, periods);
+
+    if (locked.length) {
+        const labels = locked.map(formatPayPeriod).join(" and ");
+        throw conflict(
+            `Payroll for ${labels} has already been issued for this employee, so this request can no longer be decided. ` +
+                `HR must void that payslip first, which reopens the period and lets it be re-run with the corrected leave.`
+        );
+    }
+}
+
 export async function decideLeaveRequest(actor, requestId, action, comment) {
     const request = await findLeaveRequestById(requestId);
     if (!request) {
@@ -629,6 +689,11 @@ export async function decideLeaveRequest(actor, requestId, action, comment) {
 
     const { actedFor } = await resolveActingCapacity(actor, request, action);
     const newStatus = assertLegalTransition(action, request.status);
+
+    // After authorization and the state machine, before anything is written:
+    // an unauthorized caller should learn nothing about payroll, and an
+    // illegal transition is the more fundamental complaint of the two.
+    await assertPeriodsOpen(request, action);
 
     if (action === "CANCEL" && request.start_date <= todayDateKey()) {
         throw badRequest("Only a future, still-approved leave can be cancelled");

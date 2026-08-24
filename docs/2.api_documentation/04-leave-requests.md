@@ -260,7 +260,9 @@ Approves or rejects a `SUBMITTED` request.
 
 **Response** `200` — the updated request (`status: "APPROVED"` or `"REJECTED"`).
 
-**Errors**: `403` caller is the request's own employee, or an HR admin in-subtree but not the assigned manager · `404` caller has no relationship to this request at all (including an HR admin outside their own branch) · `409` request isn't `SUBMITTED` · `422` validation.
+**Errors**: `403` caller is the request's own employee, or an HR admin in-subtree but not the assigned manager · `404` caller has no relationship to this request at all (including an HR admin outside their own branch) · `409` request isn't `SUBMITTED`, **or the period is closed by an issued payslip (see below)** · `422` validation.
+
+> 🔒 **Payroll lock.** A decision is refused with **`409`** when the request overlaps any pay period for which *that employee* already holds an `ACTIVE` payslip. A payslip stores `lop_days` as a snapshot and payroll only runs for a fully-completed period, so a decision landing after the run would leave the slip and the leave record disagreeing — most often as a silent overpayment, since nobody queries a payslip that came out too high. The message names the period and the way out: **HR voids that payslip, which reopens the period for that employee only**, then the decision goes through and payroll is re-run. Applies to `/approve`, `/reject` and `/override`; a request spanning two months is locked if **either** month has a slip, because a request is charged in full to every period it overlaps. `/withdraw` is deliberately **not** locked — a `SUBMITTED` request never counted toward LOP, so withdrawing it cannot invalidate a slip, and it stays the employee's exit for a request that can no longer be decided.
 
 ---
 
@@ -297,6 +299,6 @@ HR overrides an already-decided request in either direction. This is now HR's *o
 
 **Response** `200` — the updated request. Recorded in the audit trail as `HR_OVERRIDE_TO_APPROVED`/`HR_OVERRIDE_TO_REJECTED`, distinguishable from a plain approve/reject.
 
-**Errors**: `403` caller isn't `HR_ADMIN` at all (including `SUPER_ADMIN`) · `404` caller is HR but this request is outside their own reporting subtree · `409` `toStatus: "APPROVED"` on a request that isn't `REJECTED` (or vice versa) · `422` validation, including a missing/blank `comment`.
+**Errors**: `403` caller isn't `HR_ADMIN` at all (including `SUPER_ADMIN`) · `404` caller is HR but this request is outside their own reporting subtree · `409` `toStatus: "APPROVED"` on a request that isn't `REJECTED` (or vice versa), **or the period is closed by an issued payslip** (see the payroll lock note under `/approve` · `/reject` — an override is the most likely way to hit it, since it acts on an already-decided request) · `422` validation, including a missing/blank `comment`.
 
 ---
