@@ -180,6 +180,18 @@ export function PayrollRunForm({ onSaved }) {
                                         {row.status !== "ok" && (
                                             <p className="mt-0.5 text-xs text-slate-500">{row.skipReason}</p>
                                         )}
+                                        {/* A re-run keeps the salary the period
+                                            was originally run with, so a raise
+                                            entered afterwards deliberately does
+                                            not move these figures. Said out
+                                            loud, because otherwise "I gave her
+                                            a raise and the number didn't
+                                            change" reads as a bug. */}
+                                        {row.usedArchivedSalary && (
+                                            <p className="mt-0.5 text-xs text-slate-500">
+                                                Re-run — uses this period&apos;s original salary, not the current one.
+                                            </p>
+                                        )}
                                     </td>
                                 </tr>
                             ))}

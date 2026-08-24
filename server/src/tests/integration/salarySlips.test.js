@@ -254,8 +254,20 @@ describe("Salary slips (calculated payroll)", () => {
         const thirdConfirm = await agent.post("/api/salary-slips/confirm").send({ payPeriod });
         expect(thirdConfirm.body.data.committed).toHaveLength(1);
         expect(thirdConfirm.body.data.committed[0].id).toBe(slipId);
-        expect(Number(thirdConfirm.body.data.committed[0].basic_pay)).toBe(35000);
+        // Still 30000, not the 35000 entered in between: a re-run keeps the
+        // salary the period was originally run with (G23 — see
+        // salaryBasisFromSlip). This assertion used to expect 35000 and was
+        // using the structure change as a *proxy* for "the row was genuinely
+        // replaced". That property is still true and still asserted — by the
+        // archived revision and the single-row count below — but the proxy no
+        // longer works, because the replacement deliberately reuses the same
+        // basis. The trade-off is documented: a backdated structure correction
+        // can't be applied to an already-run period without `effective_from`.
+        expect(Number(thirdConfirm.body.data.committed[0].basic_pay)).toBe(30000);
 
+        // The row *was* replaced — a revision is archived even when the figures
+        // come out identical, which is what proves the re-confirm went through
+        // rather than being skipped.
         const revisions = await pool.query("SELECT * FROM salary_slip_revisions WHERE salary_slip_id = $1", [slipId]);
         expect(revisions.rows).toHaveLength(1);
         expect(Number(revisions.rows[0].basic_pay)).toBe(30000);

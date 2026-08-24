@@ -29,6 +29,48 @@ import { badRequest, forbidden, notFound, conflict } from "../utils/appError.js"
 const ALREADY_GENERATED_REASON =
     "Already received a payslip for this period — void the existing slip first to re-run";
 
+// Reconstructs the salary basis a previous payslip for this period was built
+// from, in the shape computeSlip expects a salary_structures row to be.
+//
+// Input: a slip row (any status). Output: an object with the same component
+// keys `findStructureByEmployeeId` returns.
+//
+// This exists because `salary_structures` holds exactly one row per employee,
+// overwritten on every change, with no effective dates — so `computeSlip` has
+// no way to ask "what was this person earning in July". Re-running July after a
+// raise therefore recomputed it at the *new* salary: measured on a ₹50,000
+// employee raised to ₹60,000, a re-run of a full month paid ₹10,000 too much,
+// and even a pro-rated exit month was out by ₹3,225.81.
+//
+// The fix needs no schema change because the slip already carries the whole
+// basis — basic_pay, hra, both PF figures, esic, special_allowance and
+// income_tax are all slip columns, snapshotted when it was generated, and a
+// voided slip keeps them. So the salary that applied to a period is on record
+// for any period that has ever been run.
+//
+// The rule this establishes, and the reason it is easy to reason about later:
+// **a correction recomputes days, never salary.** Every re-run in this app
+// exists to fix a day count — a late leave approval, a leaving date, a stale
+// pro-ration — so keeping the salary basis fixed is what those corrections
+// actually mean.
+//
+// The deliberate limitation: a genuinely backdated raise cannot be applied to a
+// period that has already been run, because this will keep using the archived
+// basis. That needs `effective_from` on the structure itself, which is a
+// migration and an HR field, and is the right answer only once backdated raises
+// are a real workflow.
+function salaryBasisFromSlip(slip) {
+    return {
+        basic_salary: slip.basic_pay,
+        hra: slip.hra,
+        pf_employee_contribution: slip.pf_employee_contribution,
+        pf_employer_contribution: slip.pf_employer_contribution,
+        esic: slip.esic,
+        special_allowance: slip.special_allowance,
+        income_tax: slip.income_tax,
+    };
+}
+
 function round2(value) {
     return Math.round(value * 100) / 100;
 }
@@ -222,6 +264,13 @@ async function calculateForSubtree(actor, payPeriod, { role, profileStatus } = {
         existingSlips.filter((slip) => slip.status === "ACTIVE").map((slip) => slip.employee_id)
     );
 
+    // Every prior slip for this period, *including voided ones* — the same query
+    // that answers "already generated?" also answers "what salary applied to
+    // this period?". A voided slip is exactly the interesting case: void and
+    // re-run is how every correction in this app happens, so that row holds the
+    // basis the corrected slip should keep.
+    const priorSlipByEmployee = new Map(existingSlips.map((slip) => [slip.employee_id, slip]));
+
     const rows = await Promise.all(
         employees.map(async (employee) => {
             if (employee.profile_status !== "VERIFIED") {
@@ -309,7 +358,25 @@ async function calculateForSubtree(actor, payPeriod, { role, profileStatus } = {
                 };
             }
 
-            return computeSlip(employee, structure, payPeriod);
+            // A period that has been run before keeps the salary it was run
+            // with; only the day-derived figures are recomputed. See
+            // salaryBasisFromSlip for why, and for what this deliberately
+            // cannot do (apply a backdated raise to an already-run month).
+            //
+            // A current structure is still required even when the basis comes
+            // from the slip: its *existence* is what marks someone as on
+            // payroll at all, and an employee whose structure was removed
+            // should stop being paid rather than keep being paid from an
+            // archive. Only its values are superseded.
+            const priorSlip = priorSlipByEmployee.get(employee.id);
+            const basis = priorSlip ? salaryBasisFromSlip(priorSlip) : structure;
+
+            const row = await computeSlip(employee, basis, payPeriod);
+
+            // Flagged so HR is never surprised by a figure that ignored a raise
+            // they just entered. Without this, "I gave her a raise, re-ran
+            // July, and the number didn't move" looks like a bug.
+            return priorSlip ? { ...row, usedArchivedSalary: true } : row;
         })
     );
 

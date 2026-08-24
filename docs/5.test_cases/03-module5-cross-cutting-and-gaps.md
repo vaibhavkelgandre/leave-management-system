@@ -152,7 +152,14 @@ These first three are **already-documented, deliberate product gaps** from `.cla
 - A non-`ACTIVE` account is skipped as `"Account is no longer active"`
 - Leave dated after the exit contributes **no** LOP days
 - An ordinary full-month employee with no dates set is byte-identical to the pre-proration formula
-- 🟡 **Regenerating a slip after voiding always uses today's salary structure**, not the structure as of the original period.
+- ✅ **Covered (was 🟡): a re-run keeps the salary the period was originally run with.** This mattered more than its 🟡 suggested, because void-and-re-run became the standard correction path — so a correction made after a raise silently overpaid the corrected month (₹10,000 on a full month for a ₹50,000 employee raised to ₹60,000; ₹3,225.81 even pro-rated). Fixed with no schema change: the slip already stores the whole salary basis and a voided slip keeps it, so the basis is read from the prior slip for that period rather than from the current structure. Resolved from the same query that already answered "already generated?". Rows carry `usedArchivedSalary: true` and the preview says so, since otherwise a raise that doesn't move the figure reads as a bug. **Known limitation:** a genuinely backdated raise can't be applied to an already-run period — that needs `effective_from` on the structure, and is only worth a migration once backdated raises are a real workflow.
+
+**Server — `payrollReRunSalaryBasis.test.js`** (5 tests)
+- Uses the archived basis, not a raise entered afterwards — the exact overpayment, pinned at ₹45,825 rather than ₹55,825
+- Recomputes the day-derived figures while the salary stays fixed: a leaving date still pro-rates to 10 of 31 days, at the *old* per-day rate, and explicitly *not* at the raised one
+- Uses the current structure for a period never run before (no archived basis exists, and the current one is the right answer)
+- Keeps the basis from a slip that was `ACTIVE` and later voided, not only one voided from the start
+- Still skips an employee whose structure has been **removed** — the archive supersedes the structure's values, never its existence
 
 Genuinely untested (not just declined):
 
