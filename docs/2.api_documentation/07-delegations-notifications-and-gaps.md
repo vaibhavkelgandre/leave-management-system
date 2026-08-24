@@ -64,6 +64,8 @@ The in-app notification bell. Every route below requires `requireAuth` only — 
 | `LEAVE_REQUEST_SUBMITTED` | Manager (or nearest HR ancestor if none) | `POST /api/leave-requests` |
 | `LEAVE_REQUEST_DECIDED` | Employee | `POST /api/leave-requests/:id/approve`\|`/reject`\|`/override` |
 | `LEAVE_REQUEST_WITHDRAWN_CANCELLED` | Manager (or nearest HR ancestor if none) | `POST /api/leave-requests/:id/withdraw`\|`/cancel` |
+| `LEAVE_REQUEST_OVERDUE` | Manager (or nearest HR ancestor if none) | Hourly sweep — `sweepOverdueLeaveRequests`, for a request still `SUBMITTED` 30+ days after its start date |
+| `LEAVE_REQUEST_AWAITING_DECISION` | Employee | The same sweep. Two types for one event because the wording *and* the click destination differ: the manager goes to Approvals to decide it, the employee to My Leave to withdraw it |
 | `PROFILE_SUBMITTED` | Nearest HR ancestor | `POST /api/employees/me/profile/submit` |
 | `PROFILE_VERIFIED` | Employee | `POST /api/employees/:id/verify` |
 | `PROFILE_SENT_BACK` | Employee | `POST /api/employees/:id/send-back` |

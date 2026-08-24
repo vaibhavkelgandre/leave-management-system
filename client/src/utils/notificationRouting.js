@@ -12,10 +12,18 @@
 // and TeamRequestList.jsx both auto-open RequestDetailModal for it.
 export function getNotificationRoute({ type, entity_id: entityId }) {
     switch (type) {
+        // AWAITING_DECISION is the employee's half of the overdue sweep: their
+        // action is to withdraw, which lives on My Leave. Sending them to
+        // Approvals instead would bounce them to /403 unless they happened to
+        // be a manager or an active delegate.
         case "LEAVE_REQUEST_DECIDED":
+        case "LEAVE_REQUEST_AWAITING_DECISION":
             return { pathname: "/dashboard/my-leave", state: { selectedRequestId: entityId } };
+        // OVERDUE is the manager's half of the same sweep: their action is to
+        // decide it, so it lands with the rest of the approvals traffic.
         case "LEAVE_REQUEST_SUBMITTED":
         case "LEAVE_REQUEST_WITHDRAWN_CANCELLED":
+        case "LEAVE_REQUEST_OVERDUE":
             return { pathname: "/dashboard/approvals", state: { selectedRequestId: entityId } };
         case "PROFILE_SUBMITTED":
             return { pathname: `/dashboard/profile-verification/${entityId}`, state: null };

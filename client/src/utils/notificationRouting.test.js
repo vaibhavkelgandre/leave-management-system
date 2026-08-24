@@ -20,6 +20,20 @@ describe("getNotificationRoute", () => {
         });
     });
 
+    // The overdue-request sweep sends two notifications for one request, and
+    // they must land on different pages: the manager decides, the employee
+    // withdraws. Routing both to Approvals would bounce the employee to /403.
+    it("splits the overdue sweep's two notifications between Approvals and My Leave", () => {
+        expect(getNotificationRoute({ type: "LEAVE_REQUEST_OVERDUE", entity_id: "req-9" })).toEqual({
+            pathname: "/dashboard/approvals",
+            state: { selectedRequestId: "req-9" },
+        });
+        expect(getNotificationRoute({ type: "LEAVE_REQUEST_AWAITING_DECISION", entity_id: "req-9" })).toEqual({
+            pathname: "/dashboard/my-leave",
+            state: { selectedRequestId: "req-9" },
+        });
+    });
+
     it("sends a profile submission to HR's verification detail page for that employee", () => {
         expect(getNotificationRoute({ type: "PROFILE_SUBMITTED", entity_id: "emp-1" })).toEqual({
             pathname: "/dashboard/profile-verification/emp-1",

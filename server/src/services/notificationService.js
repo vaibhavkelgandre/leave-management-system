@@ -397,6 +397,67 @@ export async function notifyDelegationNominated(delegation) {
 // calendar day (e.g. an hourly sweep, or a server restart), so this
 // dedupes via existsNotificationCreatedToday rather than assuming it's only
 // ever called once per transition.
+// Tells the two people who can still act that a request has been sitting
+// undecided since well after the leave happened: the manager, who can decide
+// it, and the employee, who can withdraw it.
+//
+// Input: a row from findOverdueSubmittedRequests, and how many days overdue it
+// is. Output: none. Never throws — a notification is a side effect of the
+// sweep, not its purpose.
+//
+// Two recipients, two wordings, because the useful next step differs: the
+// manager needs to decide, the employee needs to know they can withdraw and
+// get their pending days back. Deduped per day via
+// existsNotificationCreatedToday, since the sweep runs hourly and a restart
+// re-runs it — without that, an overdue request would notify twenty-four times
+// a day, forever.
+export async function notifyLeaveRequestOverdue(request, daysOverdue) {
+    try {
+        const employeeName = `${request.employee_first_name} ${request.employee_last_name}`.trim();
+        // Raw date keys, matching notifyDelegationNominated's existing wording
+        // convention in this file rather than introducing a second date style.
+        const dates = `${request.start_date} to ${request.end_date}`;
+
+        // Two types rather than one shared type, following the
+        // MANAGER_REASSIGNED / TEAM_MEMBER_ASSIGNED precedent: the wording
+        // differs, and so does where a click should land.
+        // notificationRouting.js maps type -> destination with no knowledge of
+        // the viewer's role, so a shared type would send one of these two
+        // audiences to the wrong page — and an employee sent to
+        // /dashboard/approvals is bounced to /403.
+        //
+        // Each type is deduped independently: they are separate rows with
+        // separate read state, and a manager with no manager_id of their own
+        // must not suppress the employee's copy.
+        if (
+            request.employee_manager_id &&
+            !(await existsNotificationCreatedToday("LEAVE_REQUEST_OVERDUE", request.id))
+        ) {
+            await insertNotification({
+                recipientId: request.employee_manager_id,
+                actorId: request.employee_id,
+                type: "LEAVE_REQUEST_OVERDUE",
+                entityType: "LEAVE_REQUEST",
+                entityId: request.id,
+                message: `${employeeName}'s ${request.leave_type_name} request for ${dates} has been waiting ${daysOverdue} days for your decision`,
+            });
+        }
+
+        if (!(await existsNotificationCreatedToday("LEAVE_REQUEST_AWAITING_DECISION", request.id))) {
+            await insertNotification({
+                recipientId: request.employee_id,
+                actorId: request.employee_id,
+                type: "LEAVE_REQUEST_AWAITING_DECISION",
+                entityType: "LEAVE_REQUEST",
+                entityId: request.id,
+                message: `Your ${request.leave_type_name} request for ${dates} is still undecided after ${daysOverdue} days. Withdraw it to return the days to your balance, or ask your manager to decide it.`,
+            });
+        }
+    } catch (error) {
+        console.error("Failed to create overdue leave request notifications:", error.message);
+    }
+}
+
 export async function notifyDelegationStarted(delegation) {
     try {
         if (await existsNotificationCreatedToday("DELEGATION_STARTED", delegation.id)) return;

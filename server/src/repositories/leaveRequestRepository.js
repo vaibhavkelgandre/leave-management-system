@@ -383,6 +383,33 @@ export async function updateLeaveRequestStatus(id, { status, decidedBy, decision
 // flagged `counts_as_lop`, overlapping [startDate, endDate] (same interval-
 // overlap test as findLeaveTakenReport above). Reuses existing leave data
 // instead of a separate attendance system, which doesn't exist in this app.
+// Requests still awaiting a decision long after the leave itself has passed.
+//
+// Input: a cutoff date key — requests whose start_date is on or before it and
+// which are still SUBMITTED. Output: rows carrying the employee, their manager
+// and the names both notifications need, so the sweep needs no follow-up
+// lookups per row.
+//
+// Ordered oldest-first so the log line from a large first sweep reads
+// chronologically. No limit: the set is naturally tiny (anything already
+// notified today is deduped downstream), and capping it would silently leave
+// the oldest requests unreported.
+export async function findOverdueSubmittedRequests(cutoffDate) {
+    const result = await pool.query(
+        `SELECT lr.id, lr.employee_id, lr.start_date, lr.end_date, lr.working_days,
+                u.first_name AS employee_first_name, u.last_name AS employee_last_name,
+                u.manager_id AS employee_manager_id,
+                lt.name AS leave_type_name
+         FROM leave_requests lr
+         JOIN users u ON u.id = lr.employee_id
+         JOIN leave_types lt ON lt.id = lr.leave_type_id
+         WHERE lr.status = 'SUBMITTED' AND lr.start_date <= $1
+         ORDER BY lr.start_date ASC`,
+        [cutoffDate]
+    );
+    return result.rows;
+}
+
 export async function findLopWorkingDays(employeeId, startDate, endDate) {
     const result = await pool.query(
         `SELECT COALESCE(SUM(lr.working_days), 0) AS lop_days

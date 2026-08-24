@@ -3,7 +3,7 @@ import app from "./app.js";
 import pool from "./config/db.js";
 import { isMailConfigured } from "./config/mailer.js";
 import { describeMailFeatures } from "./config/mailFeatures.js";
-import { sweepDelegationTransitions } from "./services/notificationSweepService.js";
+import { sweepDelegationTransitions, sweepOverdueLeaveRequests } from "./services/notificationSweepService.js";
 
 // Loads server/.env into process.env — must happen before anything reads
 // config like DB credentials or the HR registration code.
@@ -40,25 +40,40 @@ const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on port ${PORT}`);
 });
 
-// The only time-based (not request-driven) notification trigger in this
-// app — see notificationSweepService.js. Hourly rather than daily so a
-// same-day transition is never missed for long after a server restart;
-// harmless to re-run within the same day since the sweep dedupes internally.
-const DELEGATION_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
+// The time-based (not request-driven) notification triggers in this app — see
+// notificationSweepService.js. Hourly rather than daily so a same-day
+// transition is never missed for long after a server restart; harmless to
+// re-run within the same day since both sweeps dedupe internally.
+const NOTIFICATION_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
 
-function runDelegationSweep() {
-    sweepDelegationTransitions().catch((error) => {
+// One timer for both sweeps, run sequentially rather than in parallel: they
+// share a connection pool and neither is urgent to the minute, so serialising
+// them keeps a restart from opening twice the connections it needs. A failure
+// in one is logged and does not stop the other.
+async function runNotificationSweeps() {
+    try {
+        await sweepDelegationTransitions();
+    } catch (error) {
         console.error("Delegation notification sweep failed:", error.message);
-    });
+    }
+
+    try {
+        const { notified } = await sweepOverdueLeaveRequests();
+        if (notified) {
+            console.log(`[overdue-leave-sweep] reported ${notified} undecided request(s)`);
+        }
+    } catch (error) {
+        console.error("Overdue leave request sweep failed:", error.message);
+    }
 }
 
-runDelegationSweep();
-const delegationSweepInterval = setInterval(runDelegationSweep, DELEGATION_SWEEP_INTERVAL_MS);
+void runNotificationSweeps();
+const notificationSweepInterval = setInterval(() => void runNotificationSweeps(), NOTIFICATION_SWEEP_INTERVAL_MS);
 
 // Ensures in-flight requests finish and the DB pool is closed cleanly before
 // the process exits, instead of dropping connections when the host stops the container/process.
 function shutdown() {
-    clearInterval(delegationSweepInterval);
+    clearInterval(notificationSweepInterval);
     server.close(() => {
         pool.end().then(() => process.exit(0));
     });
