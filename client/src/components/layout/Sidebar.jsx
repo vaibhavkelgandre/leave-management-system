@@ -42,9 +42,22 @@ export function Sidebar({ collapsed, onToggleCollapse, mobileOpen, onCloseMobile
             <aside
                 className={`fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r border-slate-200 bg-white transition-transform duration-200 lg:sticky lg:top-0 lg:h-screen lg:translate-x-0 ${
                     mobileOpen ? "translate-x-0" : "-translate-x-full"
-                } ${collapsed ? "lg:w-20" : "lg:w-64"}`}
+                } ${collapsed ? "lg:w-20" : "lg:w-56"}`}
             >
-                {/* The mobile close button is lg:hidden, so at lg+ this row's only
+                {/* No border-b under the brand block, deliberately. It used to
+                    carry one and was meant to continue TopBar's own border into
+                    the sidebar as a single rule, but the two never read as one
+                    line: they meet at the sidebar's vertical border, so any
+                    difference in height or shade shows up as a step exactly
+                    where the eye is drawn. Dropping it leaves the top bar's rule
+                    to run the width of the content it actually caps.
+
+                    h-14 still matches TopBar's inner row, so the logo and the
+                    controls beside it sit on one baseline — that part was always
+                    worth having, and is why the height is explicit rather than
+                    left to whatever the contents happen to measure.
+
+                    The mobile close button is lg:hidden, so at lg+ this row's only
                     ever-visible child is the logo Link — justify-between then has
                     nothing to distribute it against and leaves it pinned to the
                     left edge instead of centered like the nav icons below it once
@@ -53,7 +66,7 @@ export function Sidebar({ collapsed, onToggleCollapse, mobileOpen, onCloseMobile
                     mobile drawer (logo + close button, never collapsed) still
                     needs the two ends of the row kept apart. */}
                 <div
-                    className={`flex h-16 shrink-0 items-center justify-between border-b border-slate-100 px-4 ${
+                    className={`flex h-14 shrink-0 items-center justify-between px-4 ${
                         collapsed ? "lg:justify-center" : ""
                     }`}
                 >

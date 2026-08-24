@@ -13,3 +13,4 @@
 | [01-module1-accounts.md](01-module1-accounts.md) | accounts, roles, reporting structure, invitations |
 | [02-modules-2-to-4.md](02-modules-2-to-4.md) | leave setup and calendar, requests and approval, dashboards and reporting |
 | [03-module5-cross-cutting-and-gaps.md](03-module5-cross-cutting-and-gaps.md) | payroll and profile, notifications, `SUPER_ADMIN`, shared UI, and the known gaps |
+| [04-manual-e2e-checklist.md](04-manual-e2e-checklist.md) | a manual pass to run by hand, covering what no automated test reaches — cross-role journeys, refusals, and phone width |

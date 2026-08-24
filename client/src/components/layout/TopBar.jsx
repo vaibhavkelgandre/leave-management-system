@@ -203,18 +203,24 @@ function UserIdentity() {
 export function TopBar({ onOpenMobileMenu, onNavigate }) {
     const { hasAnyRole } = useAuth();
 
-    // py-2, down from py-3: with the brand label and the user's name both gone
-    // this row is only as tall as its controls, and every pixel saved here is
-    // one the page's own content gets — the bar is sticky, so its height is
-    // subtracted from every screen, on every page.
+    // A fixed h-14 row rather than padding around intrinsic content: the
+    // sidebar's brand block has to match this height exactly, and two blocks
+    // that each size themselves to their own contents drift apart the moment a
+    // control is added to either. 56px is what the padded version already
+    // measured (the tallest control is the 40px account trigger), so this
+    // pins the current height rather than changing it.
+    //
+    // Height still matters as much as it did when this went from py-3 to py-2:
+    // the bar is sticky, so every pixel here is subtracted from every screen of
+    // every page.
     return (
-        <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/80 px-4 py-2 backdrop-blur sm:px-6 lg:px-8">
+        <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/80 px-4 backdrop-blur sm:px-6 lg:px-8">
             {/* Same max-w-7xl + mx-auto as AppLayout's <main> — without this, the
                 search/bell/account cluster stretches to the far edge of the
                 viewport on a wide screen while the actual page content below it
                 stays capped and centered, leaving the account menu well past
                 where the content it sits above actually ends. */}
-            <div className="mx-auto flex max-w-7xl items-center gap-3">
+            <div className="mx-auto flex h-14 max-w-7xl items-center gap-3">
                 <button
                     type="button"
                     onClick={onOpenMobileMenu}
