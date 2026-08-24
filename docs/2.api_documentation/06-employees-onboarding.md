@@ -178,6 +178,51 @@ Deliberately not the same route as `GET /api/users/:id`: that one lets any `HR_A
 
 ---
 
+### `POST /api/employees/:id/exit`
+
+Records that an employee has left, and brings any already-issued payslips back in line in the same operation. This is the intended way to set a leaving date — `PATCH .../employment-dates` refuses (`409`) when a payslip is in the way, and this is the operation that clears it.
+
+**Auth**: `HR_ADMIN` / `SUPER_ADMIN`, scoped to the caller's own HR scope. A manager gets `403`; an HR admin from another branch gets `404`.
+
+**Body**
+```json
+{
+  "lastWorkingDay": "YYYY-MM-DD, required",
+  "reason": "string, required"
+}
+```
+
+`reason` is required because it's recorded on the void of any payslip this corrects — "why was this voided" with no answer is worse than no void record. Same reasoning as the required comment on an HR override.
+
+**What it does to existing payslips**, decided per `ACTIVE` slip by where the leaving date falls:
+
+| Slip's period | Action |
+|---|---|
+| Ends **before** the leaving date | Untouched — the employee was employed for the whole month |
+| **Contains** the leaving date | **Replaced**, pro-rated to the days worked. Not voided first: `replaceSlipsForPeriod` already archives the current figures into `salary_slip_revisions` and supersedes them, and it deliberately clears the void fields on reactivation — so voiding would wipe the reason it just recorded and tell the employee their payslip was voided without ever telling them it was reissued |
+| Starts **after** the leaving date | **Voided, not reissued.** That's time the employee wasn't employed for, so there's nothing to pay; a pro-rated slip there would be inventing a payment. The void is the final state, so HR's reason is durable on it |
+
+A regenerated slip whose net pay works out to zero or less isn't written, the same rule as an ordinary run.
+
+**Response** `200`
+```json
+{
+  "success": true,
+  "message": "Exit recorded. 1 payslip(s) voided, 0 reissued.",
+  "data": {
+    "employee": { "...": "the updated record" },
+    "voided": ["2026-08"],
+    "regenerated": ["2026-07"]
+  }
+}
+```
+
+**Errors**: `400` leaving date before the joining date · `403` caller isn't HR-tier · `404` employee outside the caller's HR scope · `422` validation, including a missing `lastWorkingDay` or a blank `reason`.
+
+> ℹ️ **The corrected payslip is not emailed.** The existing send only happens after `POST /salary-slips/confirm`, and wiring it here would mean a PDF render and an SMTP handshake inside what is otherwise a metadata update. The corrected slip is available in the app immediately.
+
+---
+
 ### `PATCH /api/employees/:id/employment-dates`
 
 HR records the two dates payroll depends on: `joiningDate` (from the signed offer letter, normally at verification time) and `lastWorkingDay` (when someone leaves).

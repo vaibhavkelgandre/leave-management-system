@@ -134,6 +134,21 @@ export async function submitProfile(req, res, next) {
     }
 }
 
+// HR records that an employee has left. One action rather than a date edit
+// followed by manual payslip housekeeping: it sets the leaving date and
+// corrects any payslip that date invalidates, reporting both back.
+export async function processExit(req, res, next) {
+    try {
+        const result = await userService.processEmployeeExit(req.user, req.params.id, req.body);
+        const corrected = result.voided.length
+            ? ` ${result.voided.length} payslip(s) voided, ${result.regenerated.length} reissued.`
+            : "";
+        sendSuccess(res, 200, `Exit recorded.${corrected}`.trim(), result);
+    } catch (error) {
+        next(error);
+    }
+}
+
 // HR records the employment dates payroll depends on — the joining date from
 // the signed offer letter at verification time, and the last working day when
 // someone leaves. Not self-service: see userService.updateEmploymentDates.

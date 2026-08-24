@@ -327,6 +327,101 @@ async function calculateForSubtree(actor, payPeriod, { role, profileStatus } = {
     return { rows, summary };
 }
 
+// Brings already-issued payslips back in line with a newly-recorded leaving
+// date. Called by userService.processEmployeeExit immediately after the date is
+// saved, so `employee` must already carry the new value.
+//
+// Input: the acting HR user, the updated employee row, and the leaving date.
+// Output: `{ voided, regenerated }` — arrays of pay periods, for the caller to
+// report back to HR.
+//
+// Three cases per existing ACTIVE slip, decided by where the leaving date falls
+// relative to that slip's period:
+//
+//   - period ends before the leaving date  → untouched. The employee was
+//     employed for the whole month; nothing about that month changed.
+//   - period contains the leaving date     → voided and re-issued, pro-rated.
+//     This is the month the exit actually affects.
+//   - period starts after the leaving date → voided and *not* re-issued. That
+//     is time the employee was not employed for at all, so there is nothing to
+//     pay; leaving a pro-rated slip there would be inventing a payment.
+//
+// Void-then-replace rather than an in-place update, because that is the
+// correction path this app already has: replaceSlipsForPeriod archives the
+// current figures into salary_slip_revisions before overwriting, so both the
+// original and the corrected numbers survive. A payslip that quietly changed
+// underneath the employee with no record of what it used to say would be worse
+// than the drift it fixes.
+//
+// A regenerated slip whose net pay works out to zero or less is deliberately
+// not written — the same rule as an ordinary run. The void stands on its own,
+// which is the honest outcome: there was nothing to pay.
+export async function reconcileSlipsAfterExit(actor, employee, lastWorkingDay, reason) {
+    const slips = await findSlipsByEmployeeIds([employee.id], {});
+    const active = slips.filter((slip) => slip.status === "ACTIVE");
+
+    const voided = [];
+    const regenerated = [];
+
+    for (const slip of active) {
+        const { startDate, endDate } = monthRange(slip.pay_period);
+
+        if (endDate <= lastWorkingDay) {
+            continue;
+        }
+
+        // A period that starts after the leaving date is voided outright: that
+        // is time the employee was not employed for, so there is nothing to
+        // pay, and reissuing a pro-rated slip would be inventing a payment.
+        // The void is the final state here, which is why HR's reason is durable
+        // on it and answers "why is there no payslip for this month".
+        if (startDate > lastWorkingDay) {
+            await voidSlip(slip.id, {
+                voidedBy: actor.id,
+                // HR's own words first, then what the system did with them, so
+                // the slip explains itself without cross-referencing anything.
+                reason: `${reason} (employment ended ${lastWorkingDay}; this period is entirely after the last working day)`,
+            });
+            voided.push(slip.pay_period);
+            await notifySalarySlipVoided(slip.id, actor.id); // non-critical side effect
+            continue;
+        }
+
+        // The month containing the leaving date is replaced, not voided first.
+        // replaceSlipsForPeriod already archives the current figures into
+        // salary_slip_revisions and supersedes them — and it deliberately
+        // clears voided_by/voided_at/void_reason when it does, treating a
+        // re-run as a fresh authoritative confirm. So voiding first would add a
+        // moment of VOIDED state, wipe the reason it just recorded, and notify
+        // the employee their payslip was voided without ever telling them it
+        // was reissued. Replacing directly is both simpler and more honest.
+
+        const structure = await findStructureByEmployeeId(employee.id);
+        if (!structure) {
+            continue;
+        }
+
+        const row = await computeSlip(employee, structure, slip.pay_period);
+        if (row.status !== "ok") {
+            continue;
+        }
+
+        await replaceSlipsForPeriod({
+            payPeriod: slip.pay_period,
+            actorId: actor.id,
+            rows: [{ employeeId: employee.id, ...row.computed }],
+        });
+        regenerated.push(slip.pay_period);
+    }
+
+    // Deliberately not emailing the corrected payslip. The existing send only
+    // happens after confirmPayroll, and wiring it here would mean a second PDF
+    // render and SMTP handshake inside what is otherwise a metadata update. The
+    // corrected slip is available in the app immediately; telling the employee
+    // about it is a decision for whoever adds the exit notification.
+    return { voided, regenerated };
+}
+
 export async function calculatePayroll(actor, payPeriod, filters = {}) {
     if (actor.role !== "HR_ADMIN" && actor.role !== "SUPER_ADMIN") {
         throw forbidden("Only HR can calculate payroll");

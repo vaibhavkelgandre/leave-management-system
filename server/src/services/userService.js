@@ -25,6 +25,7 @@ import {
 } from "./employeeDocumentService.js";
 import { assertNoCycle } from "./reportingService.js";
 import { isInActorsHrScope, getHrScopedEmployeeIds } from "./hrScopeService.js";
+import { reconcileSlipsAfterExit } from "./salarySlipService.js";
 import { assertLegalProfileTransition } from "./profileVerificationStateMachine.js";
 import {
     notifyProfileSubmitted,
@@ -241,6 +242,60 @@ export async function submitProfileForVerification(actorId) {
 // derived from these dates, so moving them afterwards would leave the slip and
 // the employment record disagreeing, silently. HR voids the affected slip
 // first, which reopens the period.
+// Records that an employee has left, and brings any already-issued payslips
+// back in line in the same operation.
+//
+// Input: the acting HR user, the employee's id, and `{ lastWorkingDay, reason }`
+// — the reason is carried into the void record on any slip this corrects.
+// Output: `{ employee, voided, regenerated }`, where the two arrays are the pay
+// periods touched, so HR is told exactly what happened rather than having to go
+// and look.
+// Throws 403 for a non-HR caller, 404 outside the actor's HR scope, and 400 for
+// a leaving date before the joining date.
+//
+// Deliberately does *not* go through updateEmploymentDates, even though it
+// writes the same column. That function refuses (409) when a payslip already
+// covers an affected period, because a bare date edit would leave the slip and
+// the employment record disagreeing silently. This one is the operation that
+// *resolves* that disagreement, so the same refusal would block the only thing
+// that fixes it. Two intents on one field: "edit this date" is blocked when a
+// payslip is in the way, "process this exit" clears the way itself.
+//
+// Voiding and re-issuing here — rather than refusing and asking HR to do it by
+// hand — is safe for a reason worth stating, because the opposite call was made
+// for leave decisions (assertPeriodsOpen blocks and does not auto-correct).
+// There, no human was deciding anything: approving a leave request would have
+// quietly rewritten a payslip the employee already held. Here a human is
+// explicitly processing an exit, with a stated reason recorded against the
+// void, and the mechanism is the existing void-and-rerun path reached from one
+// button instead of five manual steps. The audit trail is identical either way.
+export async function processEmployeeExit(actor, employeeId, { lastWorkingDay, reason }) {
+    if (actor.role !== "HR_ADMIN" && actor.role !== "SUPER_ADMIN") {
+        throw forbidden("Only HR can record an employee exit");
+    }
+
+    const employee = await findUserById(employeeId);
+    if (!employee || !(await isInActorsHrScope(actor, employeeId))) {
+        throw notFound("Employee not found");
+    }
+
+    if (employee.joining_date && lastWorkingDay < employee.joining_date) {
+        throw badRequest("Last working day cannot be before the joining date");
+    }
+
+    const updated = await updateEmploymentDatesRepo(employeeId, { lastWorkingDay });
+    if (!updated) {
+        throw notFound("Employee not found");
+    }
+
+    // Reconciliation runs after the write, never before: computeSlip reads the
+    // leaving date off the employee row, so re-issuing against a stale row
+    // would reproduce exactly the figures being corrected.
+    const { voided, regenerated } = await reconcileSlipsAfterExit(actor, updated, lastWorkingDay, reason);
+
+    return { employee: updated, voided, regenerated };
+}
+
 export async function updateEmploymentDates(actor, employeeId, { joiningDate, lastWorkingDay }) {
     if (actor.role !== "HR_ADMIN" && actor.role !== "SUPER_ADMIN") {
         throw forbidden("Only HR can set employment dates");

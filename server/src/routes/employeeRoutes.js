@@ -15,6 +15,7 @@ import {
     documentTypeParamSchema,
     employeeDocumentParamsSchema,
     documentReviewSchema,
+    employeeExitSchema,
     employmentDatesSchema,
     salaryStructureSchema,
     customDocumentUploadSchema,
@@ -109,6 +110,18 @@ router.post(
     validateParams(employeeIdParamSchema),
     validateBody(sendProfileBackSchema),
     controller.sendProfileBack
+);
+
+// The exit action: sets the leaving date and corrects any payslip it
+// invalidates, in one operation. Separate from employment-dates below because
+// the intents differ — that one refuses when a payslip is in the way, this one
+// is what clears it.
+router.post(
+    "/:id/exit",
+    requireRole("HR_ADMIN", "SUPER_ADMIN"),
+    validateParams(employeeIdParamSchema),
+    validateBody(employeeExitSchema),
+    controller.processExit
 );
 
 // HR-only, and scoped to the actor's own HR scope inside the service. These

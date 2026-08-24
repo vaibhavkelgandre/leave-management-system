@@ -54,6 +54,15 @@ export const documentDispositionQuerySchema = z.object({
 // — each validator defines its own rather than importing a shared one.
 const dateStringSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "date must be in YYYY-MM-DD format");
 
+// The exit action. lastWorkingDay is required (that is the whole point), and a
+// reason is required too — it is recorded on the void of any payslip this
+// corrects, and "why was this payslip voided" with no answer is worse than no
+// void record at all. Same reasoning as the required comment on an HR override.
+export const employeeExitSchema = z.object({
+    lastWorkingDay: dateStringSchema,
+    reason: z.string().trim().min(1, "A reason is required to record an exit"),
+});
+
 // HR sets these two dates, never the employee — both determine pay (see
 // userRepository's PROFILE_FIELD_COLUMNS note). `.nullable()` on each so a date
 // can be cleared as well as set: clearing last_working_day is how a rejoining
