@@ -34,8 +34,12 @@ export async function getLeaveTypeById(req, res, next) {
 
 export async function updateLeaveType(req, res, next) {
     try {
-        const leaveType = await leaveTypeService.updateLeaveType(req.params.id, req.body);
-        sendSuccess(res, 200, "Leave type updated", leaveType);
+        const { leaveType, balancesUpdated } = await leaveTypeService.updateLeaveType(req.params.id, req.body);
+        // The count belongs in the message: HR opted in to rewriting this
+        // year's entitlements, and "12 balances updated" is the confirmation
+        // that it actually reached people.
+        const applied = balancesUpdated ? ` ${balancesUpdated} existing balance(s) updated for this year.` : "";
+        sendSuccess(res, 200, `Leave type updated.${applied}`.trim(), { leaveType, balancesUpdated });
     } catch (error) {
         next(error);
     }
@@ -43,8 +47,17 @@ export async function updateLeaveType(req, res, next) {
 
 export async function updateLeaveTypeStatus(req, res, next) {
     try {
-        const leaveType = await leaveTypeService.setLeaveTypeStatus(req.params.id, req.body.isActive);
-        sendSuccess(res, 200, "Leave type status updated", leaveType);
+        const { leaveType, pendingRequests } = await leaveTypeService.setLeaveTypeStatus(
+            req.params.id,
+            req.body.isActive
+        );
+        // Deactivating blocks new requests but not decisions on existing
+        // ones, so HR is told how many are still awaiting one — otherwise the
+        // type vanishes from the picker while approvals on it keep landing.
+        const stillPending = pendingRequests
+            ? ` ${pendingRequests} request(s) of this type are still awaiting a decision and can still be approved.`
+            : "";
+        sendSuccess(res, 200, `Leave type status updated.${stillPending}`.trim(), { leaveType, pendingRequests });
     } catch (error) {
         next(error);
     }

@@ -18,7 +18,14 @@ export const createLeaveTypeSchema = z.object({
     countsAsLop: z.boolean().optional().default(false),
 });
 
-export const updateLeaveTypeSchema = createLeaveTypeSchema;
+// Update takes one field create doesn't: whether the new entitlement should
+// also be written onto this year's existing balance rows. Opt-in, defaulting to
+// false, because `leave_balances.entitlement` is a snapshot and silently
+// rewriting it would change numbers employees have already been shown — see
+// leaveTypeService.updateLeaveType.
+export const updateLeaveTypeSchema = createLeaveTypeSchema.extend({
+    applyToCurrentYear: z.boolean().optional().default(false),
+});
 
 export const leaveTypeIdParamSchema = z.object({
     id: z.string().uuid("id must be a valid id"),
