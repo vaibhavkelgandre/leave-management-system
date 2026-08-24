@@ -219,7 +219,7 @@ A regenerated slip whose net pay works out to zero or less isn't written, the sa
 
 **Errors**: `400` leaving date before the joining date · `403` caller isn't HR-tier · `404` employee outside the caller's HR scope · `422` validation, including a missing `lastWorkingDay` or a blank `reason`.
 
-> ℹ️ **The corrected payslip is not emailed.** The existing send only happens after `POST /salary-slips/confirm`, and wiring it here would mean a PDF render and an SMTP handshake inside what is otherwise a metadata update. The corrected slip is available in the app immediately.
+> ℹ️ **The corrected payslip is not emailed, on purpose.** Emailing it was tried and removed: a corrected exit-month slip is almost always *smaller*, so the employee would receive a second payslip for a month they already had one for, quietly reduced and unexplained, because an HR admin recorded a date. A pro-rated slip is also **not a final settlement** — notice pay, leave encashment and gratuity aren't modelled here — so sending it unprompted presents an incomplete figure as a final one. The employee is told in-app (`EMPLOYMENT_DATES_UPDATED`) and the corrected slip is available immediately; telling a departing employee what they will actually be paid is a conversation.
 
 ---
 

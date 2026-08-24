@@ -414,25 +414,23 @@ export async function reconcileSlipsAfterExit(actor, employee, lastWorkingDay, r
         regenerated.push(slip.pay_period);
     }
 
-    // The corrected payslip is emailed, using exactly the mechanism
-    // confirmPayroll already uses: fired *after* this returns and never
-    // awaited, so a PDF render plus an SMTP handshake can't stretch the
-    // response HR is waiting on, and a mail failure can't fail an exit that has
-    // already been recorded. That pattern is what makes this safe inside what
-    // is otherwise a metadata update — the earlier objection to sending it here
-    // was really an objection to awaiting it.
+    // The corrected payslip is deliberately NOT emailed, and this was tried the
+    // other way round first — worth recording why it was taken back out.
     //
-    // Only regenerated periods are emailed. A voided-and-not-reissued month has
-    // no payslip to send, and the employee already gets a SALARY_SLIP_VOIDED
-    // notification for it.
-    if (regenerated.length) {
-        void (async () => {
-            for (const payPeriod of regenerated) {
-                await emailCommittedPayslips([{ employee_id: employee.id }], payPeriod);
-            }
-        })().catch((error) => console.error("Failed to email corrected payslip(s):", error.message));
-    }
-
+    // Mechanically it was fine: fired after the response and never awaited, the
+    // same shape confirmPayroll uses. The problem is what it does to a person.
+    // A corrected exit-month slip is almost always *smaller*, so the employee
+    // received a second payslip for a month they already had one for, quietly
+    // reduced, with no covering explanation — as a side effect of an HR admin
+    // recording a date. And a pro-rated slip is not a final settlement: notice
+    // pay, leave encashment and gratuity aren't modelled here, so mailing it
+    // out unprompted presents an incomplete figure as a final one.
+    //
+    // The employee is still told: notifyEmploymentDatesUpdated says HR recorded
+    // their last working day and that any affected payslip has been updated,
+    // and the corrected slip is in the app. Who tells a departing employee what
+    // they will actually be paid, and when, is a conversation — not an
+    // automated attachment.
     return { voided, regenerated };
 }
 

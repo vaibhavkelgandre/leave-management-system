@@ -307,6 +307,37 @@ describe("Recording an employee exit (G22 part B)", () => {
         expect(response.body.message).toMatch(/last working day/i);
     });
 
+    it("does not email the corrected payslip — the employee is told in-app instead", async () => {
+        const hr = await createRootHr({ email: "exit-noemail-hr@example.com" });
+        const employee = await payrollReadyEmployee("exit-noemail", hr);
+        await createSalarySlip({ employeeId: employee.id, payPeriod: "2026-07", netPay: 45825, actorId: hr.id });
+
+        const response = await (await loginAs(hr))
+            .post(`/api/employees/${employee.id}/exit`)
+            .send({ lastWorkingDay: "2026-07-10", reason: "Resigned" });
+
+        // The slip *is* corrected — this test is about how the employee finds
+        // out, not whether the correction happens.
+        expect(response.body.data.regenerated).toEqual(["2026-07"]);
+
+        // Emailing it was tried and removed: a corrected exit-month slip is
+        // almost always smaller, so an unprompted second payslip for a month
+        // they already had one for is how someone discovers a pay cut. And a
+        // pro-rated slip is not a final settlement (no notice pay, no leave
+        // encashment), so mailing it presents an incomplete figure as a final
+        // one. sendSalarySlipEmail is a no-op under NODE_ENV=test, so this
+        // asserts on the notification the employee actually gets.
+        const notifications = await pool.query(
+            "SELECT type FROM notifications WHERE recipient_id = $1 ORDER BY created_at",
+            [employee.id]
+        );
+        const types = notifications.rows.map((row) => row.type);
+        expect(types).toContain("EMPLOYMENT_DATES_UPDATED");
+        // No "your payslip was generated" notification either — nothing should
+        // announce this as a fresh payslip.
+        expect(types).not.toContain("SALARY_SLIP_GENERATED");
+    });
+
     it("notifies the employee that HR recorded their exit, without quoting the date", async () => {
         const hr = await createRootHr({ email: "exit-notify-hr@example.com" });
         const employee = await payrollReadyEmployee("exit-notify", hr);
