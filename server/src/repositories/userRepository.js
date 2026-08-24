@@ -67,6 +67,18 @@ const PUBLIC_USER_COLUMNS = `
 // profile — never role_id/manager_id/status/email/employee_code/
 // profile_status, which stay HR/system managed via existing flows
 // (updateManager/updateStatus above, profileVerificationStateMachine.js).
+//
+// joining_date and last_working_day are deliberately absent too, and that is a
+// correctness rule rather than tidiness: both determine *pay*. joining_date
+// drives computeSlip's effectiveStart, the payable-day count and the
+// pre-joining deduction, so while it was self-editable an employee who really
+// started on the 20th could set it to the 1st and grant themselves the
+// difference — measured on a ₹50,000 salary in a 31-day month, ₹30,645.16 in
+// one click. Setting it to a future date was worse in a different way: payroll
+// skipped them entirely with "Not yet joined for this period". Both are now
+// HR-set (updateEmploymentDates below), sourced from the signed offer letter at
+// verification time, so the value payroll trusts was never supplied by the
+// person being paid.
 // Keyed by the camelCase name profileValidator.js's schema produces, mapped
 // to its snake_case column — the same camelCase-in/snake_case-SQL
 // convention insertUser above already uses.
@@ -78,8 +90,6 @@ const PROFILE_FIELD_COLUMNS = {
     highestEducation: "highest_education",
     passportNumber: "passport_number",
     passportExpiryDate: "passport_expiry_date",
-    joiningDate: "joining_date",
-    lastWorkingDay: "last_working_day",
     bloodGroup: "blood_group",
     maritalStatus: "marital_status",
     currentAddress: "current_address",
@@ -261,6 +271,43 @@ export async function updateManager(id, managerId) {
 // smuggle role_id/manager_id/status/email through here even by mistake;
 // the zod schema in profileValidator.js is the primary defense, this is
 // belt-and-suspenders at the data-access layer.
+// HR-only writer for the two employment dates payroll depends on.
+//
+// Input: a user id and `{ joiningDate, lastWorkingDay }` — either key may be
+// omitted to leave that date alone, and an explicit `null` clears it (which is
+// how a rejoining employee is returned to the payroll list). Output: the
+// updated public user row, or `null` for an unknown id.
+//
+// Separate from updateProfileFields on purpose: that function's whole contract
+// is "fields the employee may change about themselves", and these two are the
+// opposite of that — see the note on PROFILE_FIELD_COLUMNS above.
+export async function updateEmploymentDates(id, { joiningDate, lastWorkingDay }) {
+    const assignments = [];
+    const values = [id];
+
+    if (joiningDate !== undefined) {
+        values.push(joiningDate);
+        assignments.push(`joining_date = $${values.length}`);
+    }
+    if (lastWorkingDay !== undefined) {
+        values.push(lastWorkingDay);
+        assignments.push(`last_working_day = $${values.length}`);
+    }
+
+    if (!assignments.length) {
+        return findUserById(id);
+    }
+
+    const result = await pool.query(
+        `UPDATE users SET ${assignments.join(", ")}, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1
+         RETURNING id`,
+        values
+    );
+
+    return result.rows[0] ? findUserById(id) : null;
+}
+
 export async function updateProfileFields(id, fields) {
     const keys = Object.keys(PROFILE_FIELD_COLUMNS).filter((key) => Object.prototype.hasOwnProperty.call(fields, key));
     if (keys.length > 0) {

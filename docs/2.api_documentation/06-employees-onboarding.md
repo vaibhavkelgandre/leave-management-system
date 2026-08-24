@@ -178,6 +178,28 @@ Deliberately not the same route as `GET /api/users/:id`: that one lets any `HR_A
 
 ---
 
+### `PATCH /api/employees/:id/employment-dates`
+
+HR records the two dates payroll depends on: `joiningDate` (from the signed offer letter, normally at verification time) and `lastWorkingDay` (when someone leaves).
+
+**Neither is self-editable, and that's a correctness rule rather than a policy preference.** Both determine the payable-day count on every payslip — `joining_date` drives `computeSlip`'s `effectiveStart` and the not-employed deduction, `last_working_day` now does the same at the other end. While they sat in the self-editable profile fields, an employee who really started on the 20th could set the 1st and grant themselves the difference (₹30,645.16 on a ₹50,000 salary in a 31-day month), or set a future date and be skipped by payroll entirely. They are absent from `PATCH /api/users/me/profile` now; values sent there are ignored, not rejected, matching how that endpoint already treats `role`/`managerId`/`status`.
+
+**Auth**: `HR_ADMIN` / `SUPER_ADMIN`, scoped to the caller's own HR scope (`isInActorsHrScope`) — an HR admin from another branch gets `404`, the same answer an unrelated employee gets.
+
+**Body** — either key may be omitted to leave that date alone; an explicit `null` clears it (which is how a rejoining employee returns to the payroll list). An empty body is `422`.
+```json
+{
+  "joiningDate": "YYYY-MM-DD | null, optional",
+  "lastWorkingDay": "YYYY-MM-DD | null, optional"
+}
+```
+
+**Response** `200` — the updated employee record.
+
+**Errors**: `400` last working day before the joining date (validated against whichever value will be in force, so setting either date alone is still checked against the other) · `403` caller isn't HR-tier · `404` employee outside the caller's HR scope · **`409`** a payslip has already been issued for a period the change would affect — the same reasoning as the leave-decision payroll lock: the slip stored a payable-day count derived from these dates, so moving them afterwards would leave the two disagreeing silently. Void that payslip first, which reopens the period · `422` validation, including an empty body.
+
+---
+
 ### `POST /api/employees/:id/verify`
 
 Moves the target's profile `SUBMITTED → VERIFIED`, recording who verified it and when.

@@ -25,8 +25,6 @@ function toFormState(user) {
         highestEducation: user.highest_education || "",
         passportNumber: user.passport_number || "",
         passportExpiryDate: user.passport_expiry_date || "",
-        joiningDate: user.joining_date || "",
-        lastWorkingDay: user.last_working_day || "",
         bloodGroup: user.blood_group || "",
         maritalStatus: user.marital_status || "",
         currentAddress: user.current_address || "",
@@ -44,6 +42,18 @@ function toFormState(user) {
         bankIfscCode: user.bank_ifsc_code || "",
         bankName: user.bank_name || "",
     };
+}
+
+// For facts the employee may see but not change. Rendered as text rather than
+// a disabled input: a greyed-out box invites clicking and then reads as broken,
+// while a plain value reads as information — which is what it is.
+function ReadOnlyField({ label, value }) {
+    return (
+        <div>
+            <p className={labelClasses}>{label}</p>
+            <p className="px-3 py-2 text-sm text-slate-700">{value || "Not set by HR yet"}</p>
+        </div>
+    );
 }
 
 function Field({ id, label, ...inputProps }) {
@@ -173,8 +183,13 @@ export function ProfileForm({ user, onSaved }) {
                 <Section title="Work details" defaultOpen editing={editing}>
                     <Field id="designation" label="Designation" value={form.designation} onChange={handleChange} />
                     <Field id="department" label="Department" value={form.department} onChange={handleChange} />
-                    <Field id="joiningDate" label="Joining date" type="date" value={form.joiningDate} onChange={handleChange} />
-                    <Field id="lastWorkingDay" label="Last working day" type="date" value={form.lastWorkingDay} onChange={handleChange} />
+                    {/* Joining date and last working day are HR-set, not
+                        self-service: both determine pay (computeSlip's
+                        payable-day count), so an editable field here would let
+                        an employee change their own salary. Shown read-only so
+                        they can still see what HR recorded. */}
+                    <ReadOnlyField label="Joining date" value={user.joining_date} />
+                    <ReadOnlyField label="Last working day" value={user.last_working_day} />
                 </Section>
 
                 <Section title="Personal details" editing={editing}>

@@ -11,11 +11,13 @@ import {
     findVerifiedEmployees,
     updateManager,
     updatePasswordHash,
+    updateEmploymentDates as updateEmploymentDatesRepo,
     updateProfileFields,
     updateProfileStatus,
     updateStatus,
 } from "../repositories/userRepository.js";
 import { findDocumentsByEmployeeId } from "../repositories/employeeDocumentRepository.js";
+import { findLockedPayPeriodsForEmployee } from "../repositories/salarySlipRepository.js";
 import {
     REQUIRED_DOCUMENT_TYPES,
     assertRequiredDocumentsVerified,
@@ -33,7 +35,8 @@ import {
     notifyAccountStatusChanged,
 } from "./notificationService.js";
 import { hashPassword, verifyPassword } from "../utils/password.js";
-import { badRequest, forbidden, notFound, unauthorized } from "../utils/appError.js";
+import { badRequest, conflict, forbidden, notFound, unauthorized } from "../utils/appError.js";
+import { formatPayPeriod } from "../utils/payPeriod.js";
 
 // The minimum a profile needs before HR can meaningfully review it — not
 // every optional field on the sheet (education, passport, blood group, …),
@@ -215,6 +218,100 @@ export async function submitProfileForVerification(actorId) {
 // (assertRequiredDocumentsVerified, 400 otherwise). Checked after the state
 // transition so "you already verified this" still answers 409 rather than
 // being reported as a document problem.
+// Sets the two employment dates payroll depends on. HR-tier only.
+//
+// Input: the acting HR user, the employee's id, and `{ joiningDate,
+// lastWorkingDay }` — either may be omitted to leave that date alone.
+// Output: the updated employee record.
+// Throws 403 for a non-HR caller, 404 when the employee is outside the actor's
+// HR scope (same wording an unrelated employee gets — no more reason to know
+// they exist), 400 for a last working day before the joining date, and 409 when
+// the change would contradict a payslip that has already been issued.
+//
+// Why HR rather than the employee: both dates determine pay. joining_date
+// drives computeSlip's payable-day count and pre-joining deduction, and
+// last_working_day now does the same at the other end — so while these were
+// self-editable an employee could change their own salary from their own
+// profile page. HR sets the joining date at verification from the signed offer
+// letter, which is what makes the value payroll trusts evidence-backed rather
+// than self-reported.
+//
+// The 409 is the same reasoning as the leave-decision payroll lock
+// (leaveRequestService.assertPeriodsOpen): a payslip stored a payable-day count
+// derived from these dates, so moving them afterwards would leave the slip and
+// the employment record disagreeing, silently. HR voids the affected slip
+// first, which reopens the period.
+export async function updateEmploymentDates(actor, employeeId, { joiningDate, lastWorkingDay }) {
+    if (actor.role !== "HR_ADMIN" && actor.role !== "SUPER_ADMIN") {
+        throw forbidden("Only HR can set employment dates");
+    }
+
+    const employee = await findUserById(employeeId);
+    if (!employee || !(await isInActorsHrScope(actor, employeeId))) {
+        throw notFound("Employee not found");
+    }
+
+    // Compare against whichever value will be in force after this change, not
+    // just the incoming one, so setting either date alone is still validated
+    // against the other.
+    const effectiveJoining = joiningDate !== undefined ? joiningDate : employee.joining_date;
+    const effectiveLast = lastWorkingDay !== undefined ? lastWorkingDay : employee.last_working_day;
+    if (effectiveJoining && effectiveLast && effectiveLast < effectiveJoining) {
+        throw badRequest("Last working day cannot be before the joining date");
+    }
+
+    await assertEmploymentDatesUnpaid(employeeId, { joiningDate, lastWorkingDay }, employee);
+
+    const updated = await updateEmploymentDatesRepo(employeeId, { joiningDate, lastWorkingDay });
+    if (!updated) {
+        throw notFound("Employee not found");
+    }
+
+    // Deliberately not notifying the employee yet: a change to a date that
+    // determines their pay is worth telling them about (SALARY_STRUCTURE_UPDATED
+    // is the precedent — "your pay-affecting record changed", no figures), but
+    // that needs its own notification type and therefore its own migration, and
+    // it hasn't been asked for. Left as a known follow-up rather than inventing
+    // a type nobody has agreed to.
+    return updated;
+}
+
+// Refuses a date change that would contradict an already-issued payslip.
+//
+// Input: the employee id, the incoming dates, and their current record.
+// Output: none. Throws 409 naming the period.
+//
+// Only periods whose payable-day count could actually change are considered:
+// the earlier of the old and new value bounds the affected range on each side,
+// because moving a date in either direction changes the months between them.
+// A period with no ACTIVE slip is free to change — nothing has been paid for it
+// yet, which is the ordinary case when HR records a joining date at
+// verification time, long before that month's payroll runs.
+async function assertEmploymentDatesUnpaid(employeeId, incoming, employee) {
+    const affected = new Set();
+
+    for (const [next, current] of [
+        [incoming.joiningDate, employee.joining_date],
+        [incoming.lastWorkingDay, employee.last_working_day],
+    ]) {
+        if (next === undefined || next === current) continue;
+        for (const value of [next, current]) {
+            if (value) affected.add(value.slice(0, 7));
+        }
+    }
+
+    if (!affected.size) return;
+
+    const locked = await findLockedPayPeriodsForEmployee(employeeId, [...affected]);
+    if (locked.length) {
+        const labels = locked.map(formatPayPeriod).join(" and ");
+        throw conflict(
+            `Payroll for ${labels} has already been issued for this employee, and changing these dates would change what that payslip should have paid. ` +
+                `Void that payslip first, which reopens the period for a corrected run.`
+        );
+    }
+}
+
 export async function verifyProfile(actor, employeeId) {
     if (actor.role !== "HR_ADMIN" && actor.role !== "SUPER_ADMIN") {
         throw forbidden("Only HR can verify a profile");

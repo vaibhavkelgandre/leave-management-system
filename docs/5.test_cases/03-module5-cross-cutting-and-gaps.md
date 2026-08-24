@@ -117,7 +117,23 @@ These first three are **already-documented, deliberate product gaps** from `.cla
 - Doesn't notify twice in a day however often the sweep runs — it fires hourly and again on every restart
 - Still notifies when the employee reports straight to HR with no separate manager
 - Withdrawing after the nudge returns the pending days to the balance, which is the point of the nudge
-- 🔴 **No proration for an employee who *exits* mid-pay-period** — full-period figures are always calculated regardless of actual days employed. (Proration for an employee who *joins* mid-period was the other half of this gap — that half is now implemented, see `salarySlips.test.js` above and `.claude/rules.md`'s payroll section.)
+- ✅ **Covered (was 🔴): proration for an employee who exits mid-pay-period** — and, found while building it, two live defects that were worse than the gap itself.
+  - **The gap:** `computeSlip` clamped the period *start* to `joining_date` but left the end at the month end unconditionally, so someone leaving on the 10th of a 31-day month was paid the whole month (₹33,870.97 unearned on a ₹50,000 salary). Fixed with an `effectiveEnd` mirroring `effectiveStart`, both leave queries clamped at both ends, and an `"Already left before this period"` skip so later months aren't paid at all.
+  - **Defect 1 — `joining_date` was self-editable and already set pay.** It sat in `PROFILE_FIELD_COLUMNS` next to blood group, while driving the payable-day count. An employee who really started on the 20th could set the 1st and take **₹30,645.16**, or set a future date and be skipped by payroll entirely — and `updateMyProfile` has no status gate, so it worked long after verification. Both dates are now HR-only via `PATCH /employees/:id/employment-dates`.
+  - **Defect 2 — payroll ignored `status` entirely.** A deactivated employee with a verified profile and a salary structure kept receiving a full payslip, emailed to them, every month. Deactivation is what HR already does when someone leaves.
+  - **Still open:** no notification when a pay-affecting date changes (needs its own migration); no guard against approving leave after someone's last working day; existing `joining_date` values were self-entered and want a one-time check; and the agreed exit *action* (set the date and void-and-regenerate the affected slip in one step) is designed but not built — the current form blocks with `409` and asks HR to void first.
+
+**Server — `employmentDates.test.js`** (13 tests)
+- `joiningDate`/`lastWorkingDay` smuggled into a self-profile update are **ignored**, while a legitimate field in the same request still applies — the exploit, pinned
+- HR can set them in scope; a manager gets `403`; an HR admin from another branch gets `404`, not `403`
+- A last working day before the joining date is `400`, validated against whichever value will be in force rather than only the incoming one
+- A date change for a period with an issued payslip is `409` naming the period and the void; a period with no payslip is allowed, which is the ordinary case
+- Exit month pro-rates to the days worked (10 of 31 → ₹11,954.03, strictly less than the full ₹45,825.00)
+- A leaving date on or after the month end pays the **full** month, so a notice period needs no special case
+- A period after the leaving date is skipped as `"Already left before this period"`, with `computed: null`
+- A non-`ACTIVE` account is skipped as `"Account is no longer active"`
+- Leave dated after the exit contributes **no** LOP days
+- An ordinary full-month employee with no dates set is byte-identical to the pre-proration formula
 - 🟡 **Regenerating a slip after voiding always uses today's salary structure**, not the structure as of the original period.
 
 Genuinely untested (not just declined):

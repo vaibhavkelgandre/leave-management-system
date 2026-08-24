@@ -134,6 +134,18 @@ export async function submitProfile(req, res, next) {
     }
 }
 
+// HR records the employment dates payroll depends on — the joining date from
+// the signed offer letter at verification time, and the last working day when
+// someone leaves. Not self-service: see userService.updateEmploymentDates.
+export async function updateEmploymentDates(req, res, next) {
+    try {
+        const user = await userService.updateEmploymentDates(req.user, req.params.id, req.body);
+        sendSuccess(res, 200, "Employment dates updated", user);
+    } catch (error) {
+        next(error);
+    }
+}
+
 export async function verifyProfile(req, res, next) {
     try {
         const user = await userService.verifyProfile(req.user, req.params.id);

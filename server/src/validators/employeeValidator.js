@@ -50,6 +50,24 @@ export const documentDispositionQuerySchema = z.object({
 // HR-entered salary structure — all figures required (default to 0 rather
 // than omitting, since a structure is meant to be the complete picture used
 // for payroll, not a partial update like the self-service profile fields).
+// Local, matching the convention in delegationValidator.js/profileValidator.js
+// — each validator defines its own rather than importing a shared one.
+const dateStringSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "date must be in YYYY-MM-DD format");
+
+// HR sets these two dates, never the employee — both determine pay (see
+// userRepository's PROFILE_FIELD_COLUMNS note). `.nullable()` on each so a date
+// can be cleared as well as set: clearing last_working_day is how a rejoining
+// employee returns to the payroll list. At least one key must be present, so an
+// empty body is a 422 rather than a silent no-op.
+export const employmentDatesSchema = z
+    .object({
+        joiningDate: dateStringSchema.nullable().optional(),
+        lastWorkingDay: dateStringSchema.nullable().optional(),
+    })
+    .refine((data) => data.joiningDate !== undefined || data.lastWorkingDay !== undefined, {
+        message: "Provide joiningDate, lastWorkingDay, or both",
+    });
+
 export const salaryStructureSchema = z.object({
     basicSalary: z.coerce.number().min(0),
     hra: z.coerce.number().min(0).optional().default(0),

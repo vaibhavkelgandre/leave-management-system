@@ -18,8 +18,6 @@ export const updateMyProfileSchema = z.object({
     highestEducation: z.string().trim().min(1).max(150).optional(),
     passportNumber: z.string().trim().toUpperCase().min(1).max(20).optional(),
     passportExpiryDate: dateStringSchema.optional(),
-    joiningDate: dateStringSchema.optional(),
-    lastWorkingDay: dateStringSchema.optional(),
     bloodGroup: z.string().trim().toUpperCase().max(5).optional(),
     maritalStatus: z.enum(["SINGLE", "MARRIED", "OTHER"]).optional(),
     currentAddress: z.string().trim().min(1, "currentAddress cannot be blank").optional(),

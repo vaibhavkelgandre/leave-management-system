@@ -35,14 +35,22 @@ For every employee in the caller's reporting subtree with a `VERIFIED` profile (
 | `status` | Meaning | Committed by `/confirm`? |
 |---|---|---|
 | `ok` | Payroll-ready, figures computed | Yes |
-| `skipped` | Something is in the way — no `VERIFIED` profile, no salary structure, not yet joined, or **net pay works out to zero or less** | No |
+| `skipped` | Something is in the way — no `VERIFIED` profile, no salary structure, **account no longer `ACTIVE`**, not yet joined, **already left before this period**, or **net pay works out to zero or less** | No |
 | `already_generated` | This employee already holds an `ACTIVE` slip for this period | No |
 
 `already_generated` is reported **here, in the preview**, not just at confirm time: previously this row came back as `ok`, so HR read "Ready" for an employee who was then silently skipped on approve. `computed` is `null` for those rows — recomputing figures that can't be committed would only raise the question of why they differ from the slip the employee actually keeps. A `VOIDED` slip doesn't count, so voiding returns that employee to `ok` and reopens the period for a corrected run.
 
 **A net pay of zero or less is skipped, never issued.** This happens for real — a full month of unpaid leave, or configured deductions (PF + ESIC + income tax) that meet or exceed earnings. A zero-value payslip reads to the employee as "you were paid ₹0" and occupies the `(employee, pay_period)` slot, so the corrected run would have to void it first. The figures stay attached to the row (`computed` is populated) so HR can see *why* it came to zero.
 
-If an employee's `joining_date` falls **after** the pay period ends, they're reported as `skipped` with `skipReason: "Not yet joined for this period"` — there's nothing to compute for time before they were employed. If `joining_date` falls **within** the pay period (they joined partway through the month), earnings are pro-rated: the per-day rate still divides by the full calendar days in the month, but only days from `joining_date` onward count as payable (further reduced by any LOP in that range) — see `payableDays` in the response below. Fixed deductions (PF, ESIC, income tax) are flat configured amounts and are never pro-rated.
+Employment is bounded at **both** ends, symmetrically, from the two HR-set dates (`PATCH /api/employees/:id/employment-dates` — never self-editable, since both determine pay):
+
+- `joining_date` **after** the period ends → `skipped`, `skipReason: "Not yet joined for this period"`.
+- `last_working_day` **before** the period starts → `skipped`, `skipReason: "Already left before this period"`. Without this, setting a leaving date would pro-rate the exit month correctly and then keep issuing *full* payslips every month afterwards.
+- `status !== 'ACTIVE'` → `skipped`, `skipReason: "Account is no longer active"`. Reported separately from the leaving date because the two mean different things to HR: one is an account switched off, the other is an employment end date on record. Payroll previously ignored `status` entirely, so a deactivated employee with a verified profile and a salary structure kept receiving a full payslip, emailed to them, every month.
+- Either date falling **within** the period pro-rates earnings: the per-day rate still divides by the full calendar days in the month, but only days inside the employed window count as payable (further reduced by any LOP in that range) — see `payableDays` below. A leaving date on or after the month end pro-rates nothing, so a notice period ending in a later month is handled by the same comparison with no special case.
+- Both leave queries are clamped to the employed window at **both** ends: leave dated after someone left can no more exist than leave dated before they joined.
+
+Fixed deductions (PF, ESIC, income tax) are flat configured amounts and are never pro-rated — only the earnings component shrinks, exactly as LOP has always behaved.
 
 `role`/`profileStatus` (both optional) pre-filter the subtree *before* any of the above — e.g. `role: "EMPLOYEE"` excludes managers and other HR admins outright, rather than computing them and discarding the result. Whatever filters were used for `/calculate` should be repeated identically on the following `/confirm` call, so what's committed matches what was previewed.
 

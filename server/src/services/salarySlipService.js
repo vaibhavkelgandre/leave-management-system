@@ -99,11 +99,26 @@ async function computeSlip(employee, structure, payPeriod) {
     // missing value means "no restriction" -- treat as always employed.
     const effectiveStart =
         employee.joining_date && employee.joining_date > startDate ? employee.joining_date : startDate;
-    const daysEmployedInPeriod = inclusiveDayCount(effectiveStart, endDate);
 
+    // The mirror image, and it was missing: someone who left partway through
+    // the period was only employed up to their last working day, so the period
+    // end is clamped exactly as the start is. Without this an employee leaving
+    // on the 10th of a 31-day month was paid the full month — on a ₹50,000
+    // salary that is ₹33,870.97 they did not earn, and it happens the first
+    // time anyone resigns mid-month. last_working_day is nullable (it is only
+    // set when someone actually leaves), so a missing value means "still
+    // employed" — the same convention joining_date uses.
+    const effectiveEnd =
+        employee.last_working_day && employee.last_working_day < endDate ? employee.last_working_day : endDate;
+    const daysEmployedInPeriod = inclusiveDayCount(effectiveStart, effectiveEnd);
+
+    // Both leave queries are clamped to the employed window, not just its
+    // start: leave dated after someone left can no more exist than leave dated
+    // before they joined, and counting it would deduct LOP days from a period
+    // they were not being paid for anyway.
     const [lopDays, totalLeaveDays] = await Promise.all([
-        findLopWorkingDays(employee.id, effectiveStart, endDate),
-        findTotalLeaveWorkingDays(employee.id, effectiveStart, endDate),
+        findLopWorkingDays(employee.id, effectiveStart, effectiveEnd),
+        findTotalLeaveWorkingDays(employee.id, effectiveStart, effectiveEnd),
     ]);
 
     const basicSalary = Number(structure.basic_salary);
@@ -117,12 +132,13 @@ async function computeSlip(employee, structure, payPeriod) {
     const perDayRate = (basicSalary + hra + specialAllowance) / daysInMonth;
     const payableDays = daysEmployedInPeriod - lopDays;
     const lopDeduction = round2(perDayRate * lopDays);
-    // Days before joining, within this period, are deducted the same way
-    // LOP is (both just mean "not paid for this day"), but tracked
-    // separately from lopDeduction since they aren't leave -- zero for
-    // anyone already employed at the start of the period, which keeps this
-    // identical to the pre-existing (non-prorated) formula in that case.
-    const preJoiningDeduction = round2(perDayRate * (daysInMonth - daysEmployedInPeriod));
+    // Days in this period the employee was not employed for -- before they
+    // joined, after they left, or both -- deducted the same way LOP is (all of
+    // these just mean "not paid for this day"), but tracked separately from
+    // lopDeduction since none of them are leave. Zero for anyone employed for
+    // the whole period, which keeps this identical to the original
+    // non-prorated formula in that case.
+    const notEmployedDeduction = round2(perDayRate * (daysInMonth - daysEmployedInPeriod));
     const netPay = round2(
         basicSalary +
             hra +
@@ -131,7 +147,7 @@ async function computeSlip(employee, structure, payPeriod) {
             esic -
             incomeTax -
             lopDeduction -
-            preJoiningDeduction
+            notEmployedDeduction
     );
 
     // Nothing payable means nothing to issue. This happens for real — an
@@ -183,7 +199,7 @@ async function computeSlip(employee, structure, payPeriod) {
 // pre-filters on *who's included*, separate from the "skipped" reasons below
 // (which explain why an *included* person still didn't get a real row).
 async function calculateForSubtree(actor, payPeriod, { role, profileStatus } = {}) {
-    const { endDate } = monthRange(payPeriod);
+    const { startDate: startDateOfPeriod, endDate } = monthRange(payPeriod);
     let employees = await getHrScopedUsers(actor);
     if (role) {
         employees = employees.filter((person) => person.role === role);
@@ -214,6 +230,40 @@ async function calculateForSubtree(actor, payPeriod, { role, profileStatus } = {
                     employeeName: `${employee.first_name} ${employee.last_name}`,
                     status: "skipped",
                     skipReason: "Profile not yet verified",
+                    computed: null,
+                };
+            }
+
+            // Deactivation is the action HR already takes when someone leaves,
+            // and payroll used to ignore it entirely -- findSubtreeUsers walks
+            // the tree with no status filter, so an INACTIVE employee with a
+            // verified profile and a salary structure kept receiving a full
+            // payslip, emailed to them, every month indefinitely. Reported
+            // separately from the exit-date skip below because the two mean
+            // different things to HR: this one is an account that was switched
+            // off, that one is an employment end date on record.
+            if (employee.status !== "ACTIVE") {
+                return {
+                    employeeId: employee.id,
+                    employeeName: `${employee.first_name} ${employee.last_name}`,
+                    status: "skipped",
+                    skipReason: "Account is no longer active",
+                    computed: null,
+                };
+            }
+
+            // The counterpart to "Not yet joined for this period" below: a
+            // period entirely after the employee's last working day is time
+            // they were not employed for at all, so there is nothing to
+            // compute. Without this, setting a last working day would prorate
+            // the exit month correctly and then keep issuing full payslips for
+            // every month after it.
+            if (employee.last_working_day && employee.last_working_day < startDateOfPeriod) {
+                return {
+                    employeeId: employee.id,
+                    employeeName: `${employee.first_name} ${employee.last_name}`,
+                    status: "skipped",
+                    skipReason: "Already left before this period",
                     computed: null,
                 };
             }

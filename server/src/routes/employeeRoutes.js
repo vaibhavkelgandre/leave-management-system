@@ -15,6 +15,7 @@ import {
     documentTypeParamSchema,
     employeeDocumentParamsSchema,
     documentReviewSchema,
+    employmentDatesSchema,
     salaryStructureSchema,
     customDocumentUploadSchema,
     documentIdParamSchema,
@@ -108,6 +109,17 @@ router.post(
     validateParams(employeeIdParamSchema),
     validateBody(sendProfileBackSchema),
     controller.sendProfileBack
+);
+
+// HR-only, and scoped to the actor's own HR scope inside the service. These
+// two dates set the payable-day count on every payslip, which is why they left
+// the self-editable profile fields entirely.
+router.patch(
+    "/:id/employment-dates",
+    requireRole("HR_ADMIN", "SUPER_ADMIN"),
+    validateParams(employeeIdParamSchema),
+    validateBody(employmentDatesSchema),
+    controller.updateEmploymentDates
 );
 
 // Self can view their own structure (payroll-readiness transparency), HR
