@@ -97,7 +97,26 @@
 
 These first three are **already-documented, deliberate product gaps** from `.claude/rules.md`, not just missing tests — surfacing them here so they're visible in one place with everything else:
 
-- 🔴 **No re-sync of a salary slip's LOP when a leave request affecting that pay period is approved/cancelled *after* the slip was generated** — the slip silently drifts from the real leave record. Explicitly declined as out of scope so far.
+- 🟨 **Partially covered (was 🔴): a salary slip's LOP drifting from the leave record after the slip was issued.** Analysed as six scenarios — late approval, backdated submission, HR override in either direction, a second approval after the run, and flipping a leave type's `counts_as_lop` — of which **five overpay**, and an overpayment is the one nobody ever queries. Closed by prevention rather than re-sync, because a payslip *should* be a snapshot: rewriting one an employee has already received as a PDF would destroy the record of what was actually paid.
+  - **`assertPeriodsOpen` (M1)** refuses a decision with `409` when the request overlaps any period where that employee already holds an `ACTIVE` payslip, naming the period and the way out (HR voids it, which reopens that employee's period). Per-employee and derived from their own slip — no `payroll_periods` table, no close/reopen action. Locks the four LOP-affecting actions only; `WITHDRAW` stays open on purpose, since a `SUBMITTED` request never counted toward LOP and withdrawal is the employee's remaining exit.
+  - **`sweepOverdueLeaveRequests` (M5)** reports requests still `SUBMITTED` 30+ days after their start date, to the manager (who can decide) and the employee (who can withdraw). It exists because `SUBMIT` holds days in `pending` and only a decision or a withdrawal releases them, so an undecided request shrinks a balance permanently — true before the lock, more reachable after it. It **notifies rather than auto-closes**: every auto-close needs an actor recorded against the decision, and writing down a manager who never looked at it puts a false action in an append-only audit trail.
+  - **Still open, and the reason this is 🟨 not ✅:** flipping `counts_as_lop` on a leave type (scenario E) changes historical LOP for every employee with **no leave decision involved**, so no decision-blocking rule of any shape can see it. Catching it needs the reconciliation check that was designed alongside these two — compare each `ACTIVE` slip's stored `lop_days` against a live `findLopWorkingDays` and flag the difference — which is **not built**. Also still open: whether an `EXPIRED` status should replace M5's advisory notification, which is a product decision about what the employee sees rather than a technical one.
+
+**Server — `payrollLock.test.js`** (8 tests)
+- Refuses an approve, and an HR override, for a period that already has an issued payslip — `409`, naming the period and the void
+- Allows the approval once the payslip is voided, which pins the correction path rather than just the block
+- Still allows the employee to **withdraw** a locked request, since that cannot invalidate a slip
+- Locks a request spanning two months when **either** month has a slip (a request is charged in full to every period it overlaps)
+- Doesn't lock a different period, and doesn't lock across employees — a colleague's payslip is irrelevant
+- Reports the authorization failure (`404`), not the lock, for a manager outside the team — someone with no business seeing the request learns nothing about its payroll
+
+**Server — `overdueLeaveSweep.test.js`** (7 tests)
+- Notifies both the manager and the employee, with different wording and (per the two notification types) different click destinations
+- **Leaves the request untouched** — status stays `SUBMITTED`, `decided_by` stays null, and the audit trail still shows only `SUBMIT`
+- Ignores recent requests and already-decided ones
+- Doesn't notify twice in a day however often the sweep runs — it fires hourly and again on every restart
+- Still notifies when the employee reports straight to HR with no separate manager
+- Withdrawing after the nudge returns the pending days to the balance, which is the point of the nudge
 - 🔴 **No proration for an employee who *exits* mid-pay-period** — full-period figures are always calculated regardless of actual days employed. (Proration for an employee who *joins* mid-period was the other half of this gap — that half is now implemented, see `salarySlips.test.js` above and `.claude/rules.md`'s payroll section.)
 - 🟡 **Regenerating a slip after voiding always uses today's salary structure**, not the structure as of the original period.
 

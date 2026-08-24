@@ -15,7 +15,7 @@
 - Every table needs `created_at` and `updated_at`.
 - Store SQL scripts in `src/sql`.
 - Migrations are numbered sequentially and **never edited after being applied** — now enforced rather than merely asked for: the runner stores a SHA-256 of every applied file and refuses to run if one changed.
-  Current latest is `038_unique_super_admin_user.sql` → next migration must start at `039_...`.
+  Current latest is `040_alter_notifications_add_awaiting_decision.sql` → next migration must start at `041_...`.
 
 > ℹ️ **Holidays store a date range, not a single date.** `holidays` has `start_date`/`end_date` (both `NOT NULL`, `end_date >= start_date`), not a single `holiday_date` — this supports multi-day holidays (e.g. a 5-day Diwali). The API accepts `endDate` as optional and defaults it to `startDate` for single-day holidays. There's no DB-level uniqueness on dates anymore (ranges make exact-duplicate uniqueness meaningless); overlap between holidays is instead checked at the service layer (`holidayService.js` → `findOverlappingHoliday`) and rejected with a `409`, same status code as the old DB-constraint-driven duplicate check.
 
