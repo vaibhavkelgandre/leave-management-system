@@ -70,6 +70,7 @@ Start with whichever question you're actually asking.
 | I want to… | Read |
 |---|---|
 | **run this locally** | [`server/README.md`](server/README.md) · [`client/README.md`](client/README.md) |
+| **look up a command** | [`docs/10.commands/`](docs/10.commands/README.md) — setup, dev servers, tests, migrations per environment, all with placeholder credentials |
 | **understand the codebase** | [`docs/architecture/`](docs/architecture/README.md) — 20 files by concern, including end-to-end traces for every module |
 | **demo it end to end** | [`docs/6.demo_walkthrough/`](docs/6.demo_walkthrough/README.md) — a script in presentation order |
 | **call the API** | [`docs/2.api_documentation/`](docs/2.api_documentation/README.md) |
