@@ -24,6 +24,15 @@ const labelClasses = "mb-1 block text-sm font-medium text-slate-700";
 const inputClasses =
     "block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500";
 
+// Both actions can withdraw payslips as a side effect, so both say so the same
+// way. Naming the periods matters: a date change that silently voided two
+// payslips is something HR would otherwise hear about from the employee, and
+// the corrected figures only exist once payroll is re-run.
+function describeOutcome(headline, voided) {
+    if (!voided?.length) return headline;
+    return `${headline} ${voided.length} payslip(s) voided (${voided.join(", ")}). Re-run payroll for those periods to issue corrected ones.`;
+}
+
 export function EmploymentDatesCard({ employee, onChanged }) {
     const [joiningDate, setJoiningDate] = useState(employee.joining_date || "");
     const [exitOpen, setExitOpen] = useState(false);
@@ -39,8 +48,8 @@ export function EmploymentDatesCard({ employee, onChanged }) {
         setResult("");
         setBusy(true);
         try {
-            await updateEmploymentDates(employee.id, { joiningDate: joiningDate || null });
-            setResult("Joining date saved.");
+            const outcome = await updateEmploymentDates(employee.id, { joiningDate: joiningDate || null });
+            setResult(describeOutcome("Joining date saved.", outcome.voided));
             onChanged?.();
         } catch (err) {
             setError(toErrorMessage(err, "Unable to save the joining date"));
@@ -59,17 +68,7 @@ export function EmploymentDatesCard({ employee, onChanged }) {
         setBusy(true);
         try {
             const outcome = await recordEmployeeExit(employee.id, { lastWorkingDay, reason });
-            // Say what actually happened to the payslips. HR has no other way
-            // to find out, and "exit recorded" alone would hide the fact that a
-            // payslip was just reissued with different figures.
-            const parts = [`Exit recorded for ${lastWorkingDay}.`];
-            if (outcome.regenerated?.length) {
-                parts.push(`Payslip reissued, pro-rated: ${outcome.regenerated.join(", ")}.`);
-            }
-            if (outcome.voided?.length) {
-                parts.push(`Payslip voided (period entirely after the exit): ${outcome.voided.join(", ")}.`);
-            }
-            setResult(parts.join(" "));
+            setResult(describeOutcome(`Exit recorded for ${lastWorkingDay}.`, outcome.voided));
             setExitOpen(false);
             setReason("");
             onChanged?.();

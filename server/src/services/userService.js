@@ -17,7 +17,6 @@ import {
     updateStatus,
 } from "../repositories/userRepository.js";
 import { findDocumentsByEmployeeId } from "../repositories/employeeDocumentRepository.js";
-import { findLockedPayPeriodsForEmployee } from "../repositories/salarySlipRepository.js";
 import {
     REQUIRED_DOCUMENT_TYPES,
     assertRequiredDocumentsVerified,
@@ -25,7 +24,7 @@ import {
 } from "./employeeDocumentService.js";
 import { assertNoCycle } from "./reportingService.js";
 import { isInActorsHrScope, getHrScopedEmployeeIds } from "./hrScopeService.js";
-import { reconcileSlipsAfterExit } from "./salarySlipService.js";
+import { voidSlipsInconsistentWithEmploymentDates } from "./salarySlipService.js";
 import { assertLegalProfileTransition } from "./profileVerificationStateMachine.js";
 import {
     notifyProfileSubmitted,
@@ -37,8 +36,7 @@ import {
     notifyEmploymentDatesUpdated,
 } from "./notificationService.js";
 import { hashPassword, verifyPassword } from "../utils/password.js";
-import { badRequest, conflict, forbidden, notFound, unauthorized } from "../utils/appError.js";
-import { formatPayPeriod } from "../utils/payPeriod.js";
+import { badRequest, forbidden, notFound, unauthorized } from "../utils/appError.js";
 
 // The minimum a profile needs before HR can meaningfully review it — not
 // every optional field on the sheet (education, passport, blood group, …),
@@ -289,14 +287,13 @@ export async function processEmployeeExit(actor, employeeId, { lastWorkingDay, r
         throw notFound("Employee not found");
     }
 
-    // Reconciliation runs after the write, never before: computeSlip reads the
-    // leaving date off the employee row, so re-issuing against a stale row
-    // would reproduce exactly the figures being corrected.
-    const { voided, regenerated } = await reconcileSlipsAfterExit(actor, updated, lastWorkingDay, reason);
+    // Runs after the write, never before: the consistency check reads the dates
+    // off the employee row, so checking a stale row would find nothing wrong.
+    const { voided } = await voidSlipsInconsistentWithEmploymentDates(actor, updated, reason);
 
     await notifyEmploymentDatesUpdated(employeeId, actor.id, "exit"); // non-critical side effect
 
-    return { employee: updated, voided, regenerated };
+    return { employee: updated, voided };
 }
 
 export async function updateEmploymentDates(actor, employeeId, { joiningDate, lastWorkingDay }) {
@@ -318,54 +315,29 @@ export async function updateEmploymentDates(actor, employeeId, { joiningDate, la
         throw badRequest("Last working day cannot be before the joining date");
     }
 
-    await assertEmploymentDatesUnpaid(employeeId, { joiningDate, lastWorkingDay }, employee);
-
     const updated = await updateEmploymentDatesRepo(employeeId, { joiningDate, lastWorkingDay });
     if (!updated) {
         throw notFound("Employee not found");
     }
 
+    // Any payslip these dates no longer agree with is voided, with the reason
+    // recorded and the employee told. This replaced an earlier 409 that refused
+    // the edit whenever a payslip covered an affected period — correct, but a
+    // dead end: HR was told to go and void the payslip themselves, come back,
+    // and try again. Voiding here does the same thing in one step and, unlike
+    // the refusal, also catches a slip that an *older* date had already
+    // pro-rated and which nothing would otherwise have revisited.
+    const { voided } = await voidSlipsInconsistentWithEmploymentDates(
+        actor,
+        updated,
+        "HR corrected this employee's employment dates"
+    );
+
     // These dates are no longer something the employee can see change, so they
     // are told when it happens. No values in the message — see
     // notifyEmploymentDatesUpdated.
     await notifyEmploymentDatesUpdated(employeeId, actor.id, "dates"); // non-critical side effect
-    return updated;
-}
-
-// Refuses a date change that would contradict an already-issued payslip.
-//
-// Input: the employee id, the incoming dates, and their current record.
-// Output: none. Throws 409 naming the period.
-//
-// Only periods whose payable-day count could actually change are considered:
-// the earlier of the old and new value bounds the affected range on each side,
-// because moving a date in either direction changes the months between them.
-// A period with no ACTIVE slip is free to change — nothing has been paid for it
-// yet, which is the ordinary case when HR records a joining date at
-// verification time, long before that month's payroll runs.
-async function assertEmploymentDatesUnpaid(employeeId, incoming, employee) {
-    const affected = new Set();
-
-    for (const [next, current] of [
-        [incoming.joiningDate, employee.joining_date],
-        [incoming.lastWorkingDay, employee.last_working_day],
-    ]) {
-        if (next === undefined || next === current) continue;
-        for (const value of [next, current]) {
-            if (value) affected.add(value.slice(0, 7));
-        }
-    }
-
-    if (!affected.size) return;
-
-    const locked = await findLockedPayPeriodsForEmployee(employeeId, [...affected]);
-    if (locked.length) {
-        const labels = locked.map(formatPayPeriod).join(" and ");
-        throw conflict(
-            `Payroll for ${labels} has already been issued for this employee, and changing these dates would change what that payslip should have paid. ` +
-                `Void that payslip first, which reopens the period for a corrected run.`
-        );
-    }
+    return { employee: updated, voided };
 }
 
 export async function verifyProfile(actor, employeeId) {

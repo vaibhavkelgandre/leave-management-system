@@ -19,7 +19,7 @@ import {
 } from "../repositories/salarySlipRepository.js";
 import { notifySalarySlipsGenerated, notifySalarySlipVoided } from "./notificationService.js";
 import { renderPayslipPdfBuffer } from "./payslipPdfService.js";
-import { sendSalarySlipEmail } from "./mailService.js";
+import { sendSalarySlipEmail, sendSalarySlipVoidedEmail } from "./mailService.js";
 import { formatPayPeriod } from "../utils/payPeriod.js";
 import { badRequest, forbidden, notFound, conflict } from "../utils/appError.js";
 
@@ -327,111 +327,105 @@ async function calculateForSubtree(actor, payPeriod, { role, profileStatus } = {
     return { rows, summary };
 }
 
-// Brings already-issued payslips back in line with a newly-recorded leaving
-// date. Called by userService.processEmployeeExit immediately after the date is
-// saved, so `employee` must already carry the new value.
+// How many days of a pay period an employee was actually employed for, given
+// their current joining and leaving dates.
 //
-// Input: the acting HR user, the updated employee row, and the leaving date.
-// Output: `{ voided, regenerated }` — arrays of pay periods, for the caller to
-// report back to HR.
+// Input: the employee row and a "YYYY-MM" period. Output: a whole number of
+// days, 0 when the period falls entirely outside their employment.
 //
-// Three cases per existing ACTIVE slip, decided by where the leaving date falls
-// relative to that slip's period:
+// The same clamping computeSlip applies, extracted so the "is this payslip
+// still consistent with the dates?" check below can't drift from the
+// calculation that produced the payslip in the first place.
+function employedDaysInPeriod(employee, payPeriod) {
+    const { startDate, endDate } = monthRange(payPeriod);
+    const effectiveStart =
+        employee.joining_date && employee.joining_date > startDate ? employee.joining_date : startDate;
+    const effectiveEnd =
+        employee.last_working_day && employee.last_working_day < endDate ? employee.last_working_day : endDate;
+
+    return effectiveEnd < effectiveStart ? 0 : inclusiveDayCount(effectiveStart, effectiveEnd);
+}
+
+// Voids every issued payslip that no longer agrees with the employee's
+// employment dates, and tells them why.
 //
-//   - period ends before the leaving date  → untouched. The employee was
-//     employed for the whole month; nothing about that month changed.
-//   - period contains the leaving date     → voided and re-issued, pro-rated.
-//     This is the month the exit actually affects.
-//   - period starts after the leaving date → voided and *not* re-issued. That
-//     is time the employee was not employed for at all, so there is nothing to
-//     pay; leaving a pro-rated slip there would be inventing a payment.
+// Input: the acting HR user, the employee row (already carrying the *new*
+// dates), and HR's stated reason. Output: `{ voided }` — the pay periods
+// voided, for the caller to report back.
 //
-// Void-then-replace rather than an in-place update, because that is the
-// correction path this app already has: replaceSlipsForPeriod archives the
-// current figures into salary_slip_revisions before overwriting, so both the
-// original and the corrected numbers survive. A payslip that quietly changed
-// underneath the employee with no record of what it used to say would be worse
-// than the drift it fixes.
+// **Voids rather than recomputes, and that is the whole design.** The first
+// version of this replaced the exit month's figures in place, which was wrong
+// twice over. It quietly changed a payslip the employee already held — so they
+// would discover a pay cut by re-reading a document they had already read — and
+// it only ever looked at the month containing the leaving date, so a slip an
+// *earlier* leaving date had already pro-rated was never revisited. That second
+// bug underpaid a real employee: their June slip stayed at 14 payable days after
+// their leaving date moved to 1 July, when they had in fact worked all of June.
 //
-// A regenerated slip whose net pay works out to zero or less is deliberately
-// not written — the same rule as an ordinary run. The void stands on its own,
-// which is the honest outcome: there was nothing to pay.
-export async function reconcileSlipsAfterExit(actor, employee, lastWorkingDay, reason) {
+// Comparing employed *days* rather than looking at which month the date falls in
+// is what fixes that. Any mismatch in either direction — too few days, too many,
+// or a period the employee was never employed for at all — is inconsistent and
+// gets voided. Nothing is recomputed here: HR re-runs payroll when they choose,
+// and a VOIDED slip already returns the employee to `ok` in the run preview, so
+// they are picked up automatically.
+//
+// `payable_days + lop_days` reconstructs the employed-day count the slip was
+// built from, which is why the comparison uses it rather than `payable_days`
+// alone — otherwise every slip with any loss-of-pay would look inconsistent.
+export async function voidSlipsInconsistentWithEmploymentDates(actor, employee, reason) {
     const slips = await findSlipsByEmployeeIds([employee.id], {});
-    const active = slips.filter((slip) => slip.status === "ACTIVE");
-
     const voided = [];
-    const regenerated = [];
 
-    for (const slip of active) {
-        const { startDate, endDate } = monthRange(slip.pay_period);
+    for (const slip of slips.filter((row) => row.status === "ACTIVE")) {
+        const expectedDays = employedDaysInPeriod(employee, slip.pay_period);
+        const slipDays = Number(slip.payable_days) + Number(slip.lop_days);
 
-        if (endDate <= lastWorkingDay) {
+        if (expectedDays === slipDays) {
             continue;
         }
 
-        // A period that starts after the leaving date is voided outright: that
-        // is time the employee was not employed for, so there is nothing to
-        // pay, and reissuing a pro-rated slip would be inventing a payment.
-        // The void is the final state here, which is why HR's reason is durable
-        // on it and answers "why is there no payslip for this month".
-        if (startDate > lastWorkingDay) {
-            await voidSlip(slip.id, {
-                voidedBy: actor.id,
-                // HR's own words first, then what the system did with them, so
-                // the slip explains itself without cross-referencing anything.
-                reason: `${reason} (employment ended ${lastWorkingDay}; this period is entirely after the last working day)`,
-            });
-            voided.push(slip.pay_period);
-            await notifySalarySlipVoided(slip.id, actor.id); // non-critical side effect
-            continue;
-        }
+        const explanation =
+            expectedDays === 0
+                ? `${reason} — the employee was not employed during this period, so this payslip no longer applies.`
+                : `${reason} — employment dates changed: this period now covers ${expectedDays} employed day(s), not ${slipDays}. Voided so payroll can be re-run.`;
 
-        // The month containing the leaving date is replaced, not voided first.
-        // replaceSlipsForPeriod already archives the current figures into
-        // salary_slip_revisions and supersedes them — and it deliberately
-        // clears voided_by/voided_at/void_reason when it does, treating a
-        // re-run as a fresh authoritative confirm. So voiding first would add a
-        // moment of VOIDED state, wipe the reason it just recorded, and notify
-        // the employee their payslip was voided without ever telling them it
-        // was reissued. Replacing directly is both simpler and more honest.
+        const result = await voidSlip(slip.id, { voidedBy: actor.id, reason: explanation });
+        if (!result) continue; // already voided by someone else in the meantime
 
-        const structure = await findStructureByEmployeeId(employee.id);
-        if (!structure) {
-            continue;
-        }
-
-        const row = await computeSlip(employee, structure, slip.pay_period);
-        if (row.status !== "ok") {
-            continue;
-        }
-
-        await replaceSlipsForPeriod({
-            payPeriod: slip.pay_period,
-            actorId: actor.id,
-            rows: [{ employeeId: employee.id, ...row.computed }],
-        });
-        regenerated.push(slip.pay_period);
+        voided.push(slip.pay_period);
+        await notifySalarySlipVoided(result, explanation, actor.id); // non-critical side effect
+        emailSlipVoided(slip, explanation);
     }
 
-    // The corrected payslip is deliberately NOT emailed, and this was tried the
-    // other way round first — worth recording why it was taken back out.
-    //
-    // Mechanically it was fine: fired after the response and never awaited, the
-    // same shape confirmPayroll uses. The problem is what it does to a person.
-    // A corrected exit-month slip is almost always *smaller*, so the employee
-    // received a second payslip for a month they already had one for, quietly
-    // reduced, with no covering explanation — as a side effect of an HR admin
-    // recording a date. And a pro-rated slip is not a final settlement: notice
-    // pay, leave encashment and gratuity aren't modelled here, so mailing it
-    // out unprompted presents an incomplete figure as a final one.
-    //
-    // The employee is still told: notifyEmploymentDatesUpdated says HR recorded
-    // their last working day and that any affected payslip has been updated,
-    // and the corrected slip is in the app. Who tells a departing employee what
-    // they will actually be paid, and when, is a conversation — not an
-    // automated attachment.
-    return { voided, regenerated };
+    return { voided };
+}
+
+// Tells the employee by email that a payslip has been withdrawn.
+//
+// Input: a slip row from SLIP_COLUMNS (it carries the employee's name and
+// address, so no extra lookup) and the reason recorded on the void. Output:
+// none — deliberately not awaited by any caller.
+//
+// Fire-and-forget for the same reason confirmPayroll's payslip send is: an SMTP
+// handshake must not stretch the response HR is waiting on, and a mail failure
+// must not fail a void that has already been committed. Unlike the payslip
+// email there is no PDF to render, because the point of the message is that the
+// previous PDF no longer counts.
+//
+// This is the *only* email in the exit flow, and it is the one that should be
+// there. An earlier version emailed the corrected payslip instead, which meant
+// a departing employee received a second, quietly smaller payslip with no
+// explanation. Announcing the void and saying a corrected one will follow is
+// the same information without the ambush.
+function emailSlipVoided(slip, reason) {
+    void sendSalarySlipVoidedEmail({
+        to: slip.employee_email,
+        firstName: slip.employee_first_name,
+        payPeriodLabel: formatPayPeriod(slip.pay_period),
+        reason,
+    }).catch((error) =>
+        console.error(`Failed to email void notice for ${slip.employee_email} (${slip.pay_period}):`, error.message)
+    );
 }
 
 export async function calculatePayroll(actor, payPeriod, filters = {}) {
@@ -652,5 +646,9 @@ export async function voidSalarySlip(actor, id, reason) {
         throw conflict("This salary slip is already voided");
     }
     await notifySalarySlipVoided(voided, reason, actor.id); // non-critical side effect
+    // A void is a void from the employee's side, whether HR did it from the
+    // Salary Slips page or an employment-date change forced it — so both paths
+    // tell them the same way.
+    emailSlipVoided(slip, reason);
     return voided;
 }

@@ -179,6 +179,11 @@ export async function createSalarySlip({
     employeeId,
     payPeriod = "2026-07",
     lopDays = 0,
+    // Explicit so a test can express an *already pro-rated* slip — the shape
+    // payroll produces when it runs after a joining or leaving date is already
+    // on record. Defaults to a full 31-day month, which is what a slip for a
+    // fully-employed employee looks like.
+    payableDays,
     netPay = 45825,
     actorId,
 } = {}) {
@@ -197,7 +202,7 @@ export async function createSalarySlip({
                 lopDays,
                 lopDeduction: 0,
                 totalLeaveDays: lopDays,
-                payableDays: 31 - lopDays,
+                payableDays: payableDays ?? 31 - lopDays,
                 incomeTax: 2000,
                 netPay,
             },

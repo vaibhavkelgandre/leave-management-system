@@ -61,7 +61,7 @@ describe("Employment dates are HR-set, never self-set", () => {
             .send({ joiningDate: "2026-07-20" });
 
         expect(response.statusCode).toBe(200);
-        expect(response.body.data.joining_date).toBe("2026-07-20");
+        expect(response.body.data.employee.joining_date).toBe("2026-07-20");
     });
 
     it("refuses a non-HR caller", async () => {
@@ -107,7 +107,7 @@ describe("Employment dates are HR-set, never self-set", () => {
         expect(response.body.message).toMatch(/before the joining date/i);
     });
 
-    it("refuses a date change for a period whose payslip has already been issued", async () => {
+    it("voids a payslip the new dates no longer agree with, rather than refusing the edit", async () => {
         const hr = await createRootHr({ email: "dates-locked-hr@example.com" });
         const employee = await createUser({ managerId: hr.id, email: "dates-locked-emp@example.com" });
         await createSalarySlip({ employeeId: employee.id, payPeriod: "2026-07", actorId: hr.id });
@@ -116,12 +116,13 @@ describe("Employment dates are HR-set, never self-set", () => {
             .patch(`/api/employees/${employee.id}/employment-dates`)
             .send({ lastWorkingDay: "2026-07-10" });
 
-        // Same reasoning as the leave-decision lock: the slip stored a
-        // payable-day count derived from these dates, so moving them silently
-        // would leave the two disagreeing.
-        expect(response.statusCode).toBe(409);
-        expect(response.body.message).toMatch(/July 2026/);
-        expect(response.body.message).toMatch(/void/i);
+        // This was a 409 telling HR to void the payslip themselves first.
+        // Correct, but a dead end — and it never noticed a slip an *older* date
+        // had already pro-rated, which is how a real employee ended up stuck on
+        // 14 payable days for a month they worked in full.
+        expect(response.statusCode).toBe(200);
+        expect(response.body.data.voided).toEqual(["2026-07"]);
+        expect(response.body.message).toMatch(/re-run payroll/i);
     });
 
     it("allows a date change for a period with no payslip yet, which is the normal case", async () => {
@@ -134,7 +135,9 @@ describe("Employment dates are HR-set, never self-set", () => {
             .send({ lastWorkingDay: "2026-07-10" });
 
         expect(response.statusCode).toBe(200);
-        expect(response.body.data.last_working_day).toBe("2026-07-10");
+        expect(response.body.data.employee.last_working_day).toBe("2026-07-10");
+        // Nothing to void: no payslip covered a period these dates changed.
+        expect(response.body.data.voided).toEqual([]);
     });
 });
 

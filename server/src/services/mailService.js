@@ -206,6 +206,63 @@ export async function sendEmployeeInviteEmail({ to, firstName, role, inviteLink,
 // the PDF. Net pay is deliberately kept out of the `preheader` — that line
 // shows in the inbox list and on notification popups, where a salary figure
 // has no business being.
+// Tells an employee that a payslip they already have has been withdrawn.
+//
+// Input: `{ to, firstName, payPeriodLabel, reason }`. Output: the same
+// true/false `dispatch` returns — true only when the message actually reached
+// the transport.
+//
+// This exists because the alternative was worse in both directions. Silently
+// voiding a payslip leaves someone holding a document that is no longer valid
+// and no way to know; quietly *replacing* its figures (which is what this
+// system did first) means they discover a pay cut by re-reading a payslip they
+// already read. So the void is announced, in plain terms, with the reason HR
+// gave — and deliberately **without** a corrected figure, because at the moment
+// of voiding there isn't one yet: payroll has to be re-run, and inventing a
+// number here would be guessing at what someone will be paid.
+//
+// No attachment, unlike sendSalarySlipEmail: there is nothing to attach. The
+// point of the message is that the previous attachment no longer counts.
+export async function sendSalarySlipVoidedEmail({ to, firstName, payPeriodLabel, reason }) {
+    const text = renderPlainText([
+        `Hi ${firstName},`,
+        "",
+        `Your payslip for ${payPeriodLabel} has been voided by your HR team.`,
+        "",
+        `Reason: ${reason}`,
+        "",
+        "This means the payslip you were sent for that period no longer applies.",
+        "A corrected payslip will follow once payroll has been re-run.",
+        "",
+        "If you weren't expecting this, contact your HR team — they can explain what changed.",
+    ]);
+
+    const html = renderEmailLayout({
+        heading: `Your payslip for ${payPeriodLabel} has been voided`,
+        // Never the reason: a preheader shows on a lock screen, and "employment
+        // ended" is not something to put there.
+        preheader: `Your ${payPeriodLabel} payslip no longer applies. A corrected one will follow.`,
+        blocks: [
+            paragraph(`Hi ${firstName},`),
+            paragraph(`Your payslip for ${payPeriodLabel} has been voided by your HR team.`),
+            detailRows([
+                { label: "Pay period", value: payPeriodLabel },
+                { label: "Reason", value: reason },
+            ]),
+            callout("The payslip you were sent for that period no longer applies. A corrected one will follow once payroll has been re-run."),
+            footnote("If you weren't expecting this, contact your HR team — they can explain what changed."),
+        ],
+    });
+
+    return dispatch({
+        feature: MAIL_FEATURES.SALARY_SLIP_VOIDED,
+        to,
+        subject: `Your payslip for ${payPeriodLabel} has been voided — Leave Management System`,
+        text,
+        html,
+    });
+}
+
 export async function sendSalarySlipEmail({
     to,
     firstName,

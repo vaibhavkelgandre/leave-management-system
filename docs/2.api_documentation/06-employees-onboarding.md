@@ -194,32 +194,37 @@ Records that an employee has left, and brings any already-issued payslips back i
 
 `reason` is required because it's recorded on the void of any payslip this corrects — "why was this voided" with no answer is worse than no void record. Same reasoning as the required comment on an HR override.
 
-**What it does to existing payslips**, decided per `ACTIVE` slip by where the leaving date falls:
+**What it does to existing payslips.** Every `ACTIVE` slip for that employee is checked against the dates now on record, and **any slip that no longer agrees is voided** — not recomputed. The comparison is on employed *days*: a slip's `payable_days + lop_days` is the employed-day count it was built from, and if that differs from what the current dates imply, the slip is inconsistent.
 
-| Slip's period | Action |
+That catches three cases with one rule:
+
+| Case | Result |
 |---|---|
-| Ends **before** the leaving date | Untouched — the employee was employed for the whole month |
-| **Contains** the leaving date | **Replaced**, pro-rated to the days worked. Not voided first: `replaceSlipsForPeriod` already archives the current figures into `salary_slip_revisions` and supersedes them, and it deliberately clears the void fields on reactivation — so voiding would wipe the reason it just recorded and tell the employee their payslip was voided without ever telling them it was reissued |
-| Starts **after** the leaving date | **Voided, not reissued.** That's time the employee wasn't employed for, so there's nothing to pay; a pro-rated slip there would be inventing a payment. The void is the final state, so HR's reason is durable on it |
+| The period contains the leaving date | Voided — it was built for a full month and now covers fewer employed days |
+| The period is entirely after the leaving date | Voided — the employee was never employed during it |
+| The period was pro-rated by an **older** leaving date that has since moved | Voided — this is the case a "recompute the exit month" rule silently missed, and it underpaid a real employee for a month they had worked in full |
 
-A regenerated slip whose net pay works out to zero or less isn't written, the same rule as an ordinary run.
+A period the employee worked in full, whose slip already reflects that, is left alone.
+
+**Nothing is recomputed here.** HR re-runs payroll when they choose, and a `VOIDED` slip already returns the employee to `ok` in the run preview, so they're picked up automatically. Voiding rather than replacing is deliberate: replacing the figures in place meant a departing employee discovered a pay cut by re-reading a payslip they had already read.
+
+Each void records HR's reason plus what the system did with it (e.g. *"Resigned — employment dates changed: this period now covers 10 employed day(s), not 31. Voided so payroll can be re-run."*), fires a `SALARY_SLIP_VOIDED` notification, and **emails the employee** — see the note below.
 
 **Response** `200`
 ```json
 {
   "success": true,
-  "message": "Exit recorded. 1 payslip(s) voided, 0 reissued.",
+  "message": "Exit recorded. 2 payslip(s) voided (2026-07, 2026-08) — re-run payroll for those periods.",
   "data": {
     "employee": { "...": "the updated record" },
-    "voided": ["2026-08"],
-    "regenerated": ["2026-07"]
+    "voided": ["2026-07", "2026-08"]
   }
 }
 ```
 
 **Errors**: `400` leaving date before the joining date · `403` caller isn't HR-tier · `404` employee outside the caller's HR scope · `422` validation, including a missing `lastWorkingDay` or a blank `reason`.
 
-> ℹ️ **The corrected payslip is not emailed, on purpose.** Emailing it was tried and removed: a corrected exit-month slip is almost always *smaller*, so the employee would receive a second payslip for a month they already had one for, quietly reduced and unexplained, because an HR admin recorded a date. A pro-rated slip is also **not a final settlement** — notice pay, leave encashment and gratuity aren't modelled here — so sending it unprompted presents an incomplete figure as a final one. The employee is told in-app (`EMPLOYMENT_DATES_UPDATED`) and the corrected slip is available immediately; telling a departing employee what they will actually be paid is a conversation.
+> ℹ️ **The employee is emailed about the void, never sent a corrected payslip.** Two things were tried and rejected. *Silent voiding* leaves someone holding a document that no longer applies with no way to know. *Emailing the corrected payslip* — which this did briefly — means a departing employee discovers a pay cut by re-reading a payslip they had already read, and a pro-rated slip isn't a final settlement anyway (notice pay, leave encashment and gratuity aren't modelled). So the email announces the void, gives HR's reason, and says a corrected payslip will follow — deliberately carrying **no figure**, because at the moment of voiding there isn't one yet. Controlled by `MAIL_FEATURE_SALARY_SLIP_VOIDED`; the in-app notification fires either way.
 
 ---
 
@@ -241,7 +246,9 @@ HR records the two dates payroll depends on: `joiningDate` (from the signed offe
 
 **Response** `200` — the updated employee record.
 
-**Errors**: `400` last working day before the joining date (validated against whichever value will be in force, so setting either date alone is still checked against the other) · `403` caller isn't HR-tier · `404` employee outside the caller's HR scope · **`409`** a payslip has already been issued for a period the change would affect — the same reasoning as the leave-decision payroll lock: the slip stored a payable-day count derived from these dates, so moving them afterwards would leave the two disagreeing silently. Void that payslip first, which reopens the period · `422` validation, including an empty body.
+**Errors**: `400` last working day before the joining date (validated against whichever value will be in force, so setting either date alone is still checked against the other) · `403` caller isn't HR-tier · `404` employee outside the caller's HR scope · `422` validation, including an empty body.
+
+> ℹ️ **This used to answer `409` when a payslip covered an affected period.** It now voids what no longer agrees instead, exactly as `POST /:id/exit` does, and returns `{ employee, voided }`. The refusal was safe but a dead end — HR was told to go and void the payslip themselves, come back, and try again — and it never noticed a slip an *older* date had already pro-rated, which is how an employee ended up stuck on 14 payable days for a month they worked in full.
 
 ---
 

@@ -70,7 +70,7 @@ The in-app notification bell. Every route below requires `requireAuth` only — 
 | `PROFILE_VERIFIED` | Employee | `POST /api/employees/:id/verify` |
 | `PROFILE_SENT_BACK` | Employee | `POST /api/employees/:id/send-back` |
 | `SALARY_SLIP_GENERATED` | Employee | `POST /api/salary-slips/confirm` |
-| `SALARY_SLIP_VOIDED` | Employee | `POST /api/salary-slips/:id/void` |
+| `SALARY_SLIP_VOIDED` | Employee | `POST /api/salary-slips/:id/void`, and any employment-date change that voids a slip (`PATCH /api/employees/:id/employment-dates`, `POST /api/employees/:id/exit`). Also emailed — see `MAIL_FEATURE_SALARY_SLIP_VOIDED` |
 | `MANAGER_REASSIGNED` | Employee | `PATCH /api/users/:id/manager` |
 | `TEAM_MEMBER_ASSIGNED` | Manager (new or newly-assigned) | `PATCH /api/users/:id/manager`, `POST /api/users/invite` |
 | `SALARY_STRUCTURE_UPDATED` | Employee | `PATCH /api/employees/:id/salary-structure` |

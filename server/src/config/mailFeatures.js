@@ -45,6 +45,16 @@ const FEATURE_DEFINITIONS = {
     // — they just don't arrive in their inbox. Also the flow most likely to
     // be switched off deliberately: it's the only one that attaches a file
     // and the only one that fans out to every employee in a payroll run.
+    // Safe to switch off, but think before doing it: this is the only email
+    // that tells an employee a payslip they already have has been *withdrawn*.
+    // The in-app SALARY_SLIP_VOIDED notification still fires either way, so
+    // switching this off degrades to "they find out next time they open the
+    // app" rather than "they never find out".
+    SALARY_SLIP_VOIDED: {
+        envVar: "MAIL_FEATURE_SALARY_SLIP_VOIDED",
+        enabledByDefault: true,
+        description: "Notice that a payslip has been voided (payroll void, or an employment-date change)",
+    },
     SALARY_SLIP: {
         envVar: "MAIL_FEATURE_SALARY_SLIP",
         enabledByDefault: true,

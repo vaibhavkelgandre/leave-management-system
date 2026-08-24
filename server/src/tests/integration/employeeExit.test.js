@@ -51,7 +51,7 @@ async function slipsFor(employeeId) {
 }
 
 describe("Recording an employee exit (G22 part B)", () => {
-    it("sets the leaving date and reissues the exit month pro-rated, in one action", async () => {
+    it("sets the leaving date and voids the payslip the date no longer agrees with", async () => {
         const hr = await createRootHr({ email: "exit-action-hr@example.com" });
         const employee = await payrollReadyEmployee("exit-action", hr);
         // The wrong slip the exit is correcting: a full month, already issued.
@@ -63,49 +63,60 @@ describe("Recording an employee exit (G22 part B)", () => {
 
         expect(response.statusCode).toBe(200);
         expect(response.body.data.employee.last_working_day).toBe("2026-07-10");
-        // HR is told what happened rather than having to go and look. The
-        // exit month is *replaced*, not voided first: replaceSlipsForPeriod
-        // already archives and supersedes, and voiding would only wipe the
-        // reason it just recorded (it clears void_reason on reactivation).
-        expect(response.body.data.voided).toEqual([]);
-        expect(response.body.data.regenerated).toEqual(["2026-07"]);
+        // Voided, not silently recomputed. Replacing the figures in place meant
+        // a departing employee discovered a pay cut by re-reading a payslip
+        // they had already read; voiding says so, and HR re-runs payroll to
+        // issue the corrected one when they choose.
+        expect(response.body.data.voided).toEqual(["2026-07"]);
 
         const slips = await slipsFor(employee.id);
-        const active = slips.filter((slip) => slip.status === "ACTIVE");
-        expect(active).toHaveLength(1);
-        // 10 days of 31, so 21 days deducted at 1612.9032 → 11954.03.
-        expect(Number(active[0].payable_days)).toBe(10);
-        expect(Number(active[0].net_pay)).toBeCloseTo(11954.03, 2);
+        expect(slips.filter((slip) => slip.status === "ACTIVE")).toHaveLength(0);
+        // The reason has to explain itself to whoever reads it later.
+        const voided = slips.find((slip) => slip.pay_period === "2026-07");
+        expect(voided.void_reason).toMatch(/10 employed day\(s\), not 31/);
+        expect(voided.void_reason).toMatch(/re-run/i);
     });
 
-    it("keeps the original figures as a revision, so both numbers survive", async () => {
-        const hr = await createRootHr({ email: "exit-revision-hr@example.com" });
-        const employee = await payrollReadyEmployee("exit-revision", hr);
-        await createSalarySlip({ employeeId: employee.id, payPeriod: "2026-07", netPay: 45825, actorId: hr.id });
+    // The bug that made this whole approach necessary: an exit date moving
+    // *later* left a slip an earlier date had already pro-rated, and nothing
+    // ever revisited it. A real employee sat on 14 payable days for a month
+    // they had worked in full.
+    it("voids a slip left stale by an earlier, different leaving date", async () => {
+        const hr = await createRootHr({ email: "exit-stale-hr@example.com" });
+        const employee = await payrollReadyEmployee("exit-stale", hr);
+        const hrAgent = await loginAs(hr);
 
-        await (await loginAs(hr))
+        // Order matters: the leaving date is recorded first, *then* payroll runs
+        // and produces a slip pro-rated to 14 days. That is the real sequence,
+        // and it's what leaves a consistent-at-the-time slip behind.
+        await hrAgent
             .post(`/api/employees/${employee.id}/exit`)
-            .send({ lastWorkingDay: "2026-07-10", reason: "Resigned" })
+            .send({ lastWorkingDay: "2026-06-14", reason: "Resigned" })
             .expect(200);
+        await createSalarySlip({
+            employeeId: employee.id,
+            payPeriod: "2026-06",
+            payableDays: 14,
+            actorId: hr.id,
+        });
 
-        // A payslip that changed underneath the employee with no record of what
-        // it used to say would be worse than the drift it fixes.
-        const revisions = await pool.query(
-            `SELECT r.net_pay FROM salary_slip_revisions r
-             JOIN salary_slips s ON s.id = r.salary_slip_id
-             WHERE s.employee_id = $1`,
-            [employee.id]
-        );
-        expect(revisions.rows.length).toBeGreaterThan(0);
-        expect(revisions.rows.some((row) => Number(row.net_pay) === 45825)).toBe(true);
+        // The date then moves later: they actually worked all of June.
+        const response = await hrAgent
+            .post(`/api/employees/${employee.id}/exit`)
+            .send({ lastWorkingDay: "2026-07-31", reason: "Notice extended" });
+
+        expect(response.statusCode).toBe(200);
+        // Comparing employed *days* rather than "which month contains the date"
+        // is what catches this — June is neither the exit month nor after it.
+        const june = (await slipsFor(employee.id)).find((slip) => slip.pay_period === "2026-06");
+        expect(june.status).toBe("VOIDED");
+        expect(june.void_reason).toMatch(/30 employed day\(s\)/);
     });
 
-    it("records HR's reason on a void that is the final state", async () => {
+    it("records HR's reason on the void, alongside what the system did with it", async () => {
         const hr = await createRootHr({ email: "exit-reason-hr@example.com" });
         const employee = await payrollReadyEmployee("exit-reason", hr);
-        // August is entirely after the exit, so it is voided and never
-        // reissued — which is exactly where the reason is durable and where it
-        // answers a real question ("why is there no payslip for August?").
+        // August is entirely after the exit, so nothing was employed in it.
         await createSalarySlip({ employeeId: employee.id, payPeriod: "2026-08", actorId: hr.id });
 
         await (await loginAs(hr))
@@ -116,7 +127,7 @@ describe("Recording an employee exit (G22 part B)", () => {
         const voided = (await slipsFor(employee.id)).find((slip) => slip.void_reason);
         expect(voided.void_reason).toMatch(/Resigned, last day agreed/);
         // Plus what the system did with it, so the slip explains itself.
-        expect(voided.void_reason).toMatch(/2026-07-10/);
+        expect(voided.void_reason).toMatch(/not employed during this period/i);
     });
 
     it("voids a payslip for a month entirely after the exit without reissuing one", async () => {
@@ -129,9 +140,6 @@ describe("Recording an employee exit (G22 part B)", () => {
             .send({ lastWorkingDay: "2026-07-10", reason: "Resigned" });
 
         expect(response.body.data.voided).toEqual(["2026-08"]);
-        // Nothing to pay for time the employee wasn't employed — reissuing a
-        // pro-rated slip there would be inventing a payment.
-        expect(response.body.data.regenerated).toEqual([]);
 
         const active = (await slipsFor(employee.id)).filter((slip) => slip.status === "ACTIVE");
         expect(active).toHaveLength(0);
@@ -147,7 +155,6 @@ describe("Recording an employee exit (G22 part B)", () => {
             .send({ lastWorkingDay: "2026-07-10", reason: "Resigned" });
 
         expect(response.body.data.voided).toEqual([]);
-        expect(response.body.data.regenerated).toEqual([]);
 
         const slips = await slipsFor(employee.id);
         expect(slips).toHaveLength(1);
@@ -168,24 +175,23 @@ describe("Recording an employee exit (G22 part B)", () => {
         expect(response.body.data.employee.last_working_day).toBe("2026-07-10");
     });
 
-    it("succeeds where a bare date edit is refused, since it clears the payslip itself", async () => {
+    it("voids the same slips whether HR edits the date or records an exit", async () => {
         const hr = await createRootHr({ email: "exit-vs-edit-hr@example.com" });
         const employee = await payrollReadyEmployee("exit-vs-edit", hr);
         await createSalarySlip({ employeeId: employee.id, payPeriod: "2026-07", actorId: hr.id });
         const hrAgent = await loginAs(hr);
 
-        // Part A's blocking form: correct, but a dead end on its own.
+        // This used to be a 409 telling HR to go and void the payslip
+        // themselves. That was safe but a dead end, and it also never noticed a
+        // slip an older date had already pro-rated. Both paths now void what no
+        // longer agrees with the dates.
         const edit = await hrAgent
             .patch(`/api/employees/${employee.id}/employment-dates`)
             .send({ lastWorkingDay: "2026-07-10" });
-        expect(edit.statusCode).toBe(409);
 
-        // Two intents on one field: "edit this date" is blocked when a payslip
-        // is in the way; "process this exit" clears the way itself.
-        const exit = await hrAgent
-            .post(`/api/employees/${employee.id}/exit`)
-            .send({ lastWorkingDay: "2026-07-10", reason: "Resigned" });
-        expect(exit.statusCode).toBe(200);
+        expect(edit.statusCode).toBe(200);
+        expect(edit.body.data.voided).toEqual(["2026-07"]);
+        expect(edit.body.message).toMatch(/re-run payroll/i);
     });
 
     it("requires a reason, since it lands on the void record", async () => {
@@ -307,34 +313,29 @@ describe("Recording an employee exit (G22 part B)", () => {
         expect(response.body.message).toMatch(/last working day/i);
     });
 
-    it("does not email the corrected payslip — the employee is told in-app instead", async () => {
-        const hr = await createRootHr({ email: "exit-noemail-hr@example.com" });
-        const employee = await payrollReadyEmployee("exit-noemail", hr);
+    it("tells the employee the payslip was voided, in-app and by email", async () => {
+        const hr = await createRootHr({ email: "exit-tellthem-hr@example.com" });
+        const employee = await payrollReadyEmployee("exit-tellthem", hr);
         await createSalarySlip({ employeeId: employee.id, payPeriod: "2026-07", netPay: 45825, actorId: hr.id });
 
-        const response = await (await loginAs(hr))
+        await (await loginAs(hr))
             .post(`/api/employees/${employee.id}/exit`)
-            .send({ lastWorkingDay: "2026-07-10", reason: "Resigned" });
+            .send({ lastWorkingDay: "2026-07-10", reason: "Resigned" })
+            .expect(200);
 
-        // The slip *is* corrected — this test is about how the employee finds
-        // out, not whether the correction happens.
-        expect(response.body.data.regenerated).toEqual(["2026-07"]);
-
-        // Emailing it was tried and removed: a corrected exit-month slip is
-        // almost always smaller, so an unprompted second payslip for a month
-        // they already had one for is how someone discovers a pay cut. And a
-        // pro-rated slip is not a final settlement (no notice pay, no leave
-        // encashment), so mailing it presents an incomplete figure as a final
-        // one. sendSalarySlipEmail is a no-op under NODE_ENV=test, so this
-        // asserts on the notification the employee actually gets.
+        // An earlier version emailed the *corrected payslip* instead, which is
+        // how someone discovers a pay cut by re-reading a document. Announcing
+        // the void — and that a corrected one will follow — is the same
+        // information without the ambush. (The send itself is asserted in
+        // payslipVoidEmail.test.js, where mailService is mocked.)
         const notifications = await pool.query(
-            "SELECT type FROM notifications WHERE recipient_id = $1 ORDER BY created_at",
+            "SELECT type FROM notifications WHERE recipient_id = $1",
             [employee.id]
         );
         const types = notifications.rows.map((row) => row.type);
+        expect(types).toContain("SALARY_SLIP_VOIDED");
         expect(types).toContain("EMPLOYMENT_DATES_UPDATED");
-        // No "your payslip was generated" notification either — nothing should
-        // announce this as a fresh payslip.
+        // Nothing announces a fresh payslip, because none was issued.
         expect(types).not.toContain("SALARY_SLIP_GENERATED");
     });
 

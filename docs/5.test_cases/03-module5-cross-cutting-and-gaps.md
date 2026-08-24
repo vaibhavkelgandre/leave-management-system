@@ -121,16 +121,23 @@ These first three are **already-documented, deliberate product gaps** from `.cla
   - **The gap:** `computeSlip` clamped the period *start* to `joining_date` but left the end at the month end unconditionally, so someone leaving on the 10th of a 31-day month was paid the whole month (₹33,870.97 unearned on a ₹50,000 salary). Fixed with an `effectiveEnd` mirroring `effectiveStart`, both leave queries clamped at both ends, and an `"Already left before this period"` skip so later months aren't paid at all.
   - **Defect 1 — `joining_date` was self-editable and already set pay.** It sat in `PROFILE_FIELD_COLUMNS` next to blood group, while driving the payable-day count. An employee who really started on the 20th could set the 1st and take **₹30,645.16**, or set a future date and be skipped by payroll entirely — and `updateMyProfile` has no status gate, so it worked long after verification. Both dates are now HR-only via `PATCH /employees/:id/employment-dates`.
   - **Defect 2 — payroll ignored `status` entirely.** A deactivated employee with a verified profile and a salary structure kept receiving a full payslip, emailed to them, every month. Deactivation is what HR already does when someone leaves.
-  - **The exit action is built** — `POST /employees/:id/exit` sets the leaving date and corrects payslips in one operation: the exit month is *replaced* pro-rated, a month entirely after it is voided and not reissued, and a month worked in full is untouched. Auto-correcting here is the opposite call from leave decisions on purpose — a human is explicitly processing an exit with a stated reason, using the existing void-and-rerun path rather than a new mechanism.
+  - **Payslips inconsistent with the employment dates are voided, never recomputed.** Both the date edit and the exit action run one check comparing **employed days** (`payable_days + lop_days` against what the dates imply). Two earlier designs failed here and are worth remembering: replacing the exit month's figures in place meant a departing employee would find a pay cut by re-reading an old payslip, and refusing the edit with `409` was a dead end — **and both only looked at the month containing the leaving date**, so a slip pro-rated by an *older* date that later moved was never revisited. That underpaid a real employee (June stuck at 14 payable days after the leaving date moved to 1 July) and was **reported from live use, not caught by any test**. The employee is emailed about the void with HR's reason and no figure; the `VOIDED` badge shows the reason on hover.
   - **The five follow-ups are closed:** `EMPLOYMENT_DATES_UPDATED` (migration 041) notifies the employee without quoting the date; leave starting after the last working day is refused at submit (`400`) *and* at approve (`409`), since the usual order is "book leave, then resign"; the corrected payslip is deliberately **not** emailed — that was built and then removed after being seen in use, because a corrected exit-month slip is almost always smaller and an unprompted second payslip is how someone discovers a pay cut (the in-app notification tells them instead); `npm run audit:employment-dates` reports the pre-existing data; and `EmploymentDatesCard.jsx` gives HR both actions on the verification and employee detail pages.
   - **The audit found real problems on first run** — two employees with payslips predating their joining date by a year. Worth knowing that the report is not hypothetical.
 
-**Server — `employeeExit.test.js`** (11 tests)
-- Sets the date and reissues the exit month pro-rated in one action, reporting `voided`/`regenerated` back so HR isn't left guessing
-- Keeps the original figures in `salary_slip_revisions`, so both numbers survive the correction
-- A month entirely after the exit is voided and **not** reissued, and HR's reason is durable on that void — which is the case where it answers a real question
-- A month the employee worked in full is left completely alone
-- Succeeds where the bare date edit is refused, pinning the two-intents-on-one-field design
+**Server — `payslipVoidEmail.test.js`** (4 tests, `mailService` mocked)
+- Emails the employee when an employment-date change voids their payslip: right address, human-readable period ("July 2026", not "2026-07"), HR's reason plus what the system did with it
+- Emails on an ordinary HR void too — a void is a void from the employee's side
+- Sends nothing when the dates change but no payslip is affected
+- A failed send never fails the void that has already been committed
+
+**Server — `employeeExit.test.js`** (15 tests)
+- Sets the date and voids the payslip it no longer agrees with, naming the periods so HR knows to re-run
+- **Voids a slip left stale by an earlier, different leaving date** — the bug reported from live use, and the reason the check compares days rather than months
+- A month entirely after the exit is voided with a reason saying the employee wasn't employed then
+- A month worked in full is left completely alone
+- The date edit and the exit action void the same slips — the `409` dead end is gone
+- Tells the employee in-app and by email, and announces no fresh payslip, because none was issued
 - Requires a reason (422 without one); rejects a leaving date before the joining date (400); refuses a manager (403) and an out-of-branch HR admin (404), recording nothing in either case
 - The employee is excluded from payroll for every month after the exit
 

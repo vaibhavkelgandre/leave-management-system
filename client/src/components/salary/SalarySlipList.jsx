@@ -4,6 +4,7 @@ import { ChevronDown, ChevronUp, Download, Eye } from "lucide-react";
 import { getSalarySlipPdfUrl, voidSalarySlip } from "../../services/salarySlipService.js";
 import { toErrorMessage } from "../../services/httpError.js";
 import { StatusBadge } from "../ui/Badge.jsx";
+import { Tooltip } from "../ui/Tooltip.jsx";
 import { Button } from "../ui/Button.jsx";
 import { Card } from "../ui/Card.jsx";
 
@@ -134,7 +135,15 @@ function SalarySlipRow({ slip, showEmployee, canVoid, onVoided, columnCount, exp
                 )}
                 <td className={`${tdClasses} text-right font-semibold text-slate-900`}>{money(slip.net_pay)}</td>
                 <td className={tdClasses}>
-                    <StatusBadge status={slip.status} />
+                    {/* The reason on hover, so "why is this voided?" is
+                        answerable from the row rather than only by expanding
+                        it. `portal` is required for any tooltip inside a table:
+                        the wrapper is `overflow-x-auto`, which both clips the
+                        floating label at the card's edge and counts its width
+                        toward scrollWidth, producing a phantom scrollbar. */}
+                    <Tooltip label={isVoided ? slip.void_reason : null} portal>
+                        <StatusBadge status={slip.status} />
+                    </Tooltip>
                 </td>
                 <td className={`${tdClasses} text-right`}>
                     <div className="flex items-center justify-end gap-1">

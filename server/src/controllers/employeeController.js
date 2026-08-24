@@ -141,7 +141,7 @@ export async function processExit(req, res, next) {
     try {
         const result = await userService.processEmployeeExit(req.user, req.params.id, req.body);
         const corrected = result.voided.length
-            ? ` ${result.voided.length} payslip(s) voided, ${result.regenerated.length} reissued.`
+            ? ` ${result.voided.length} payslip(s) voided (${result.voided.join(", ")}) — re-run payroll for those periods.`
             : "";
         sendSuccess(res, 200, `Exit recorded.${corrected}`.trim(), result);
     } catch (error) {
@@ -154,8 +154,14 @@ export async function processExit(req, res, next) {
 // someone leaves. Not self-service: see userService.updateEmploymentDates.
 export async function updateEmploymentDates(req, res, next) {
     try {
-        const user = await userService.updateEmploymentDates(req.user, req.params.id, req.body);
-        sendSuccess(res, 200, "Employment dates updated", user);
+        const result = await userService.updateEmploymentDates(req.user, req.params.id, req.body);
+        // Name the voided periods in the message, not just the payload: a date
+        // correction that silently withdrew two payslips would be the kind of
+        // side effect HR only discovers from the employee.
+        const voidedNote = result.voided.length
+            ? ` ${result.voided.length} payslip(s) voided (${result.voided.join(", ")}) — re-run payroll for those periods.`
+            : "";
+        sendSuccess(res, 200, `Employment dates updated.${voidedNote}`.trim(), result);
     } catch (error) {
         next(error);
     }

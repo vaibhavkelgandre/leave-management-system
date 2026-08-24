@@ -8,7 +8,7 @@
 
 ### 📧 Outbound Email
 
-> 📮 **Three flows send email, and every one of them is switchable without a code change:** the password-reset link, the invite link, and the payslip PDF after a confirmed payroll run. Everything else notifies in-app only (`notifications` table + bell).
+> 📮 **Four flows send email, and every one of them is switchable without a code change:** the password-reset link, the invite link, the payslip PDF after a confirmed payroll run, and the notice that a payslip has been **voided**. Everything else notifies in-app only (`notifications` table + bell). The void notice is the only one with no attachment — the point of the message is that a previous attachment no longer counts — and it deliberately carries no figure, because a void happens before the corrected payslip exists.
 >
 > ### The four files, and what each one is allowed to know
 >

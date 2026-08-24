@@ -27,7 +27,10 @@ beforeEach(() => {
 
 describe("EmploymentDatesCard", () => {
     it("prefills the joining date and saves an edit", async () => {
-        userService.updateEmploymentDates.mockResolvedValue({ ...employee, joining_date: "2026-02-01" });
+        userService.updateEmploymentDates.mockResolvedValue({
+            employee: { ...employee, joining_date: "2026-02-01" },
+            voided: [],
+        });
         const onChanged = vi.fn();
         renderWithProviders(<EmploymentDatesCard employee={employee} onChanged={onChanged} />);
 
@@ -53,11 +56,10 @@ describe("EmploymentDatesCard", () => {
         expect(screen.getByText("2026-07-10")).toBeInTheDocument();
     });
 
-    it("records an exit and reports what happened to the payslips", async () => {
+    it("records an exit and names the payslips it voided", async () => {
         userService.recordEmployeeExit.mockResolvedValue({
             employee: { ...employee, last_working_day: "2026-07-10" },
-            voided: ["2026-08"],
-            regenerated: ["2026-07"],
+            voided: ["2026-07", "2026-08"],
         });
         const onChanged = vi.fn();
         renderWithProviders(<EmploymentDatesCard employee={employee} onChanged={onChanged} />);
@@ -72,10 +74,10 @@ describe("EmploymentDatesCard", () => {
             reason: "Resigned",
         });
 
-        // "Exit recorded" on its own would hide the fact that a payslip was
-        // just reissued with different figures.
-        expect(await screen.findByText(/reissued, pro-rated: 2026-07/i)).toBeInTheDocument();
-        expect(screen.getByText(/voided.*2026-08/i)).toBeInTheDocument();
+        // "Exit recorded" on its own would hide the fact that two payslips
+        // were just withdrawn, and that corrected ones need a payroll re-run.
+        expect(await screen.findByText(/2 payslip\(s\) voided \(2026-07, 2026-08\)/i)).toBeInTheDocument();
+        expect(screen.getByText(/re-run payroll/i)).toBeInTheDocument();
         expect(onChanged).toHaveBeenCalled();
     });
 
@@ -83,7 +85,6 @@ describe("EmploymentDatesCard", () => {
         userService.recordEmployeeExit.mockResolvedValue({
             employee: { ...employee, last_working_day: "2026-07-10" },
             voided: [],
-            regenerated: [],
         });
         renderWithProviders(<EmploymentDatesCard employee={employee} />);
 
@@ -93,24 +94,35 @@ describe("EmploymentDatesCard", () => {
         await userEvent.click(screen.getByRole("button", { name: /confirm exit/i }));
 
         expect(await screen.findByText(/exit recorded for 2026-07-10/i)).toBeInTheDocument();
-        expect(screen.queryByText(/reissued/i)).not.toBeInTheDocument();
         expect(screen.queryByText(/voided/i)).not.toBeInTheDocument();
+        expect(screen.queryByText(/re-run payroll/i)).not.toBeInTheDocument();
     });
 
-    it("surfaces the server's refusal when a payslip is in the way", async () => {
-        // The 409 from a bare date edit. HR needs the server's own wording here,
-        // because it is the thing that tells them to void the payslip first.
-        userService.updateEmploymentDates.mockRejectedValue({
-            response: {
-                status: 409,
-                data: { message: "Payroll for July 2026 has already been issued for this employee." },
-            },
+    it("says which payslips a date correction withdrew", async () => {
+        // A bare date edit used to be refused with a 409 when a payslip covered
+        // an affected period. It now voids what no longer agrees — so the
+        // message has to name the periods, since HR has no other way to learn
+        // that a payslip was just withdrawn.
+        userService.updateEmploymentDates.mockResolvedValue({
+            employee: { ...employee, joining_date: "2026-02-01" },
+            voided: ["2026-02"],
         });
         renderWithProviders(<EmploymentDatesCard employee={employee} />);
 
         await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
 
-        expect(await screen.findByRole("alert")).toHaveTextContent(/Payroll for July 2026/);
+        expect(await screen.findByText(/1 payslip\(s\) voided \(2026-02\)/i)).toBeInTheDocument();
+    });
+
+    it("surfaces a server error without pretending it succeeded", async () => {
+        userService.updateEmploymentDates.mockRejectedValue({
+            response: { status: 400, data: { message: "Last working day cannot be before the joining date" } },
+        });
+        renderWithProviders(<EmploymentDatesCard employee={employee} />);
+
+        await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+        expect(await screen.findByRole("alert")).toHaveTextContent(/cannot be before the joining date/i);
     });
 
     it("closes the exit form on cancel without calling the service", async () => {
