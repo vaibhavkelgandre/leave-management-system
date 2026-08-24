@@ -3,7 +3,7 @@
 > What's covered, module by module, and what deliberately isn't. An inventory rather than a plan: knowing the
 > holes is more useful than an unqualified "it's tested".
 >
-> **404 server tests** across 41 files (integration-level, against a real Postgres schema) and **442 client
+> **419 server tests** across 43 files (integration-level, against a real Postgres schema) and **442 client
 > tests** across 64 files. Both run from a single `npm test` at the repository root.
 
 ---

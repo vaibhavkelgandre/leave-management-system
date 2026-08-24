@@ -44,10 +44,26 @@
 #### 🔴🟡 Gaps
 
 - 🔴 **No test for a request spanning a year boundary actually debiting the start date's year** — this is an explicitly documented settled business rule (`.claude/rules.md`) but doesn't appear as its own assertion anywhere in `leaveRequests.test.js`. Given it's a rule a reviewer could specifically probe, worth a dedicated test.
-- 🔴 **No test for deactivating a leave type's downstream effects** — what happens to existing pending/approved requests of that type, and does deactivation block new balance seeding for future hires? Currently only "hidden from non-HR listing" is tested.
-- 🟡 No test for editing a leave type's entitlement value and its effect (or lack of effect) on already-existing balance rows for the current year.
+- ✅ **Covered (was 🔴): what deactivating a leave type does to existing records.** The behaviour was consistent rather than wrong — nobody had decided whether it was the right behaviour, and neither outcome was visible to the person it affected. Two decisions came out of it. **A discontinued type stays visible in `GET /leave-balances/me` to anyone who has days on it**, flagged `leave_type_active: false` and badged "Discontinued" client-side: the reads filtered on `lt.is_active = true`, so the moment HR retired a type, every employee who had taken it lost all sight of it — the ledger still held the days, but "how many sick days did I take?" simply became unanswerable from the app. A type the employee *never used* stays hidden, since a full untouched entitlement reads as leave they could still take. And **deactivating blocks new requests, not decisions on existing ones** — a request already `SUBMITTED` was raised legitimately and can still be approved — so the response now counts them (`pendingRequests`), because otherwise the type vanishes from the picker while approvals on it keep landing.
+- ✅ **Covered (was 🟡): editing an entitlement and its effect on existing balance rows.** `leave_balances.entitlement` is a snapshot taken when the row is created, so editing the type changed nothing for anyone who already had one. The snapshot is deliberate — retroactively rewriting an entitlement changes what people have already been shown — but the consequence was silent: raising Annual Leave from 12 to 15 in June left January's hires on 12 all year while July's got 15, same type, same year, nobody told. `PATCH /leave-types/:id` now takes **`applyToCurrentYear`** (default `false`, so the old behaviour is still the default) and reports `balancesUpdated`. Past years are never touched; they record what people were entitled to then.
+- ✅ **Covered (was 🟡): a holiday added *after* an already-approved request — the count did silently go stale, and the balance with it.** `working_days` is computed once at submit, and the ledger entries that moved days into pending or taken used that stored figure, so a holiday declared afterwards (normal, not an edge case) left the employee charged for a day that had become a holiday: five days deducted for a Mon–Fri leave with a Wednesday holiday added later, permanently one day short. The reverse — a holiday deleted in error — under-charged the same way. `POST`/`PATCH`/`DELETE /holidays` now recount every `SUBMITTED`/`APPROVED` request overlapping the affected dates. **The correction is an append, not a rewrite:** `working_days` is updated in place because it is a derived cache, but the balance moves through a new `HOLIDAY_ADJUSTMENT` ledger entry (migration 042), which is what `leave_balance_ledger` is for (NFR-2). A `PATCH` that *moves* a holiday reconciles the union of the old and new ranges — reconciling only the new dates would miss that the old date stopped being a holiday.
 - 🟡 No dedicated test that `counts_as_lop` is itself settable/validated at the leave-type API level (only its downstream payroll effect is tested).
-- 🟡 No test for a holiday added *after* an already-approved leave request's dates — does the request's working-day count silently go stale?
+
+**Server — `holidayAdjustment.test.js`** (7 tests)
+- A holiday landing inside **approved** leave returns the day: `working_days` 5 → 4, `taken` follows, and the ledger reads `SUBMIT, APPROVE, HOLIDAY_ADJUSTMENT` with a `taken_delta` of `-1`
+- A **submitted** request moves its `pending` hold instead — adjusting the wrong column would corrupt a balance in a way that is very hard to see afterwards
+- Deleting a holiday inside approved leave takes the day **back**, correcting the under-charge in the other direction
+- Moving a holiday out of a leave window still recounts it, because the *old* dates changed meaning too
+- A holiday outside every request adjusts nothing and writes no ledger entry
+- A **withdrawn** request is ignored — it has already released its days, so recounting it would move a balance for something that no longer affects one
+- The employee is notified with **both** figures ("4 working day(s) instead of 5"), since "your leave was recounted" without saying from what to what isn't actionable
+
+**Server — `leaveTypeLifecycle.test.js`** (8 tests)
+- A discontinued type stays visible to an employee who used it, flagged `leave_type_active: false`; one they never used stays hidden
+- Deactivating reports how many requests are still awaiting a decision; reactivating reports none
+- An entitlement edit leaves existing balances alone **by default**, and applies to this year's rows when HR opts in — saying how many moved
+- `balancesUpdated` counts rows that genuinely changed, not rows that matched
+- A previous year's balances are never touched
 - 🟡 No client test confirming `RequestLeaveForm` actually shows/hides the document upload field based on the selected leave type's `requires_document` flag.
 
 ---

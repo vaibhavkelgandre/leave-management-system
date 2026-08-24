@@ -62,6 +62,10 @@ Fetches a single leave type by id.
 
 ### `PATCH /api/leave-types/:id`
 
+> ⚖️ **Takes one extra field: `applyToCurrentYear` (boolean, optional, default `false`).** `leave_balances.entitlement` is a snapshot taken when the row is created, so editing a type changes nothing for anyone who already has one. That snapshot is deliberate — retroactively rewriting an entitlement changes what people have already been shown — but the consequence used to be silent: raising Annual Leave from 12 to 15 in June left employees hired in January on 12 all year while anyone hired in July got 15, same type, same year, nobody told.
+>
+> Opting in rewrites **this year's** existing rows (past years record what people were entitled to then; future years have no rows yet). The response is `{ leaveType, balancesUpdated }`, counting only rows that genuinely changed, and the message repeats it. Applying a *reduction* can take someone's remaining balance negative if they have already used more than the new entitlement — a real consequence of HR's choice, reported rather than silently prevented.
+
 Edits a leave type's definition. Does **not** retroactively change balance rows already materialized for the current year — only affects future backfills.
 
 **Auth**: `HR_ADMIN` only.
@@ -73,6 +77,10 @@ Edits a leave type's definition. Does **not** retroactively change balance rows 
 ---
 
 ### `PATCH /api/leave-types/:id/status`
+
+> 🚫 **Deactivating blocks new requests, not decisions on existing ones.** `POST /leave-requests` refuses an inactive type and new employees get no balance row for it, but a request already `SUBMITTED` can still be approved — it was raised legitimately — and its days still leave the balance. The response is `{ leaveType, pendingRequests }`, counting requests of that type still awaiting a decision, so the type doesn't vanish from the picker while approvals on it keep landing.
+>
+> A discontinued type also **stays visible in `GET /leave-balances/me` for any employee who has days on it**, flagged `leave_type_active: false`. Filtering purely on `is_active` meant that the moment HR retired a type, everyone who had taken it lost sight of it — the ledger still held the days, but "how many sick days did I take?" became unanswerable from the app. A type the employee never used stays hidden, since a full untouched entitlement would read as leave they could still take.
 
 Activates/deactivates a leave type.
 
@@ -124,7 +132,19 @@ Returns another user's balances.
 
 ---
 
-## Holidays (`/api/holidays`)
+## Holidays
+
+> 🗓️ **Every holiday write can recount live leave, and the response says how much.** A holiday is global and feeds the working-day calculation, but `leave_requests.working_days` is computed once at submit and never recomputed — so a holiday declared *after* a request was approved used to leave the employee charged for a day that had become a holiday. Five days deducted for a Mon–Fri leave with a Wednesday holiday added later, permanently one day short; the reverse (a holiday deleted in error) under-charged the same way.
+>
+> `POST`, `PATCH` and `DELETE` therefore recount every **`SUBMITTED` or `APPROVED`** request overlapping the affected dates, and return `adjusted` — one entry per request whose count changed, with `previousDays` and `newDays`. Other statuses have already released their days, so recounting them would move a balance for a request that no longer affects one.
+>
+> The balance moves through a new **`HOLIDAY_ADJUSTMENT`** ledger entry rather than an edit — `leave_balance_ledger` exists exactly so a correction is an append (NFR-2: the balance must agree with the history that produced it). `working_days` on the request *is* updated in place, because it is a derived cache; nothing in `audit_logs` is touched, since the leave was still submitted and decided when it was. The employee gets a `LEAVE_DAYS_ADJUSTED` notification quoting both figures.
+>
+> A **`PATCH` that moves a holiday reconciles the union of its old and new ranges**, because both sets of dates changed meaning. And because payroll sums the stored `working_days` of approved leave, any `ACTIVE` payslip for an affected month is **voided** — re-run payroll for it.
+>
+> **Response shape:** the mutating endpoints return `{ holiday, adjusted }` (and `{ adjusted }` for `DELETE`) rather than the bare holiday, so the recount is visible rather than silent.
+
+ (`/api/holidays`)
 
 Every route below requires `requireAuth`. Holidays are name + date-range rows (`startDate`, and an optional `endDate` for multi-day holidays like a 5-day Diwali) — unlike leave types, nothing else references them, so they support a real delete.
 
