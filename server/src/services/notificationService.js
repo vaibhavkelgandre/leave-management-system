@@ -411,6 +411,37 @@ export async function notifyDelegationNominated(delegation) {
 // existsNotificationCreatedToday, since the sweep runs hourly and a restart
 // re-runs it — without that, an overdue request would notify twenty-four times
 // a day, forever.
+// Tells an employee that HR changed one of their employment dates.
+//
+// Input: the employee's id, the acting HR user's id, and which change it was
+// ("dates" for a plain edit, "exit" when a leaving day was recorded). Output:
+// none. Never throws.
+//
+// Deliberately quotes **no dates and no figures**, following
+// notifySalaryStructureUpdated's restraint for the same reason: a notification
+// list is glanced at casually and often with someone else looking at the
+// screen, and "your last working day is 10 July" is not something to put there.
+// The employee's profile page has the actual values.
+export async function notifyEmploymentDatesUpdated(employeeId, actorId, change = "dates") {
+    try {
+        const message =
+            change === "exit"
+                ? "HR recorded your last working day. Your profile shows the details, and any affected payslip has been updated."
+                : "HR updated your employment dates. Your profile shows the current values.";
+
+        await insertNotification({
+            recipientId: employeeId,
+            actorId,
+            type: "EMPLOYMENT_DATES_UPDATED",
+            entityType: "PROFILE",
+            entityId: employeeId,
+            message,
+        });
+    } catch (error) {
+        console.error("Failed to create EMPLOYMENT_DATES_UPDATED notification:", error.message);
+    }
+}
+
 export async function notifyLeaveRequestOverdue(request, daysOverdue) {
     try {
         const employeeName = `${request.employee_first_name} ${request.employee_last_name}`.trim();

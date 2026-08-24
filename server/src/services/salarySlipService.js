@@ -414,11 +414,25 @@ export async function reconcileSlipsAfterExit(actor, employee, lastWorkingDay, r
         regenerated.push(slip.pay_period);
     }
 
-    // Deliberately not emailing the corrected payslip. The existing send only
-    // happens after confirmPayroll, and wiring it here would mean a second PDF
-    // render and SMTP handshake inside what is otherwise a metadata update. The
-    // corrected slip is available in the app immediately; telling the employee
-    // about it is a decision for whoever adds the exit notification.
+    // The corrected payslip is emailed, using exactly the mechanism
+    // confirmPayroll already uses: fired *after* this returns and never
+    // awaited, so a PDF render plus an SMTP handshake can't stretch the
+    // response HR is waiting on, and a mail failure can't fail an exit that has
+    // already been recorded. That pattern is what makes this safe inside what
+    // is otherwise a metadata update — the earlier objection to sending it here
+    // was really an objection to awaiting it.
+    //
+    // Only regenerated periods are emailed. A voided-and-not-reissued month has
+    // no payslip to send, and the employee already gets a SALARY_SLIP_VOIDED
+    // notification for it.
+    if (regenerated.length) {
+        void (async () => {
+            for (const payPeriod of regenerated) {
+                await emailCommittedPayslips([{ employee_id: employee.id }], payPeriod);
+            }
+        })().catch((error) => console.error("Failed to email corrected payslip(s):", error.message));
+    }
+
     return { voided, regenerated };
 }
 

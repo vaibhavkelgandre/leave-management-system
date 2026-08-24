@@ -34,6 +34,7 @@ import {
     notifyManagerReassigned,
     notifyTeamMemberAssigned,
     notifyAccountStatusChanged,
+    notifyEmploymentDatesUpdated,
 } from "./notificationService.js";
 import { hashPassword, verifyPassword } from "../utils/password.js";
 import { badRequest, conflict, forbidden, notFound, unauthorized } from "../utils/appError.js";
@@ -293,6 +294,8 @@ export async function processEmployeeExit(actor, employeeId, { lastWorkingDay, r
     // would reproduce exactly the figures being corrected.
     const { voided, regenerated } = await reconcileSlipsAfterExit(actor, updated, lastWorkingDay, reason);
 
+    await notifyEmploymentDatesUpdated(employeeId, actor.id, "exit"); // non-critical side effect
+
     return { employee: updated, voided, regenerated };
 }
 
@@ -322,12 +325,10 @@ export async function updateEmploymentDates(actor, employeeId, { joiningDate, la
         throw notFound("Employee not found");
     }
 
-    // Deliberately not notifying the employee yet: a change to a date that
-    // determines their pay is worth telling them about (SALARY_STRUCTURE_UPDATED
-    // is the precedent — "your pay-affecting record changed", no figures), but
-    // that needs its own notification type and therefore its own migration, and
-    // it hasn't been asked for. Left as a known follow-up rather than inventing
-    // a type nobody has agreed to.
+    // These dates are no longer something the employee can see change, so they
+    // are told when it happens. No values in the message — see
+    // notifyEmploymentDatesUpdated.
+    await notifyEmploymentDatesUpdated(employeeId, actor.id, "dates"); // non-critical side effect
     return updated;
 }
 

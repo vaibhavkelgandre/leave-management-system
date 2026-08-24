@@ -5,12 +5,13 @@
 // drops the Verify/Send-back action bar (nothing left to decide) and the
 // per-document Verify/Reject controls (nothing left to review), leaving the
 // salary structure as the one thing HR still routinely comes back to edit.
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { getEmployeeForVerification } from "../services/userService.js";
 import { getDocumentsForEmployee } from "../services/employeeDocumentService.js";
 import { toErrorMessage } from "../services/httpError.js";
 import { EmployeeProfileSummary } from "../components/employees/EmployeeProfileSummary.jsx";
+import { EmploymentDatesCard } from "../components/employees/EmploymentDatesCard.jsx";
 import { EmployeeDocumentList } from "../components/employees/EmployeeDocumentList.jsx";
 import { SalaryStructureForm } from "../components/employees/SalaryStructureForm.jsx";
 import { Badge } from "../components/ui/Badge.jsx";
@@ -24,6 +25,17 @@ export function EmployeeDetailsPage() {
     const [employee, setEmployee] = useState(null);
     const [documents, setDocuments] = useState(null);
     const [loadError, setLoadError] = useState(null);
+
+    // Extracted so the employment-dates card can ask for a refresh after it
+    // writes — a stale joining date on screen next to a "saved" message is
+    // exactly the kind of thing that makes someone save twice.
+    const reload = useCallback(
+        () =>
+            getEmployeeForVerification(id)
+                .then(setEmployee)
+                .catch((err) => setLoadError(toErrorMessage(err, "Unable to load this employee"))),
+        [id]
+    );
 
     useEffect(() => {
         let cancelled = false;
@@ -72,6 +84,12 @@ export function EmployeeDetailsPage() {
             />
 
             <div className="mt-6 space-y-6">
+                {/* Above the profile details on purpose: these two dates are
+                    the only thing on this page that changes what the employee
+                    gets paid, and they are the reason HR opens it after an
+                    exit. */}
+                <EmploymentDatesCard employee={employee} onChanged={reload} />
+
                 <Card className="p-6">
                     <h3 className={sectionHeadingClasses}>Profile details</h3>
                     <div className="mt-3">

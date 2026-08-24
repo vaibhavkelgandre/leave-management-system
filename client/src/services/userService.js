@@ -95,3 +95,19 @@ export async function sendProfileBack(employeeId, reason) {
     const response = await apiClient.post(`/employees/${employeeId}/send-back`, { reason });
     return unwrap(response);
 }
+
+// HR records the two employment dates payroll depends on. Neither is
+// self-editable — both determine the payable-day count on a payslip, so the
+// value payroll trusts must not come from the person being paid.
+export async function updateEmploymentDates(employeeId, dates) {
+    const response = await apiClient.patch(`/employees/${employeeId}/employment-dates`, dates);
+    return unwrap(response);
+}
+
+// HR records that an employee has left. One call: it sets the leaving date and
+// corrects any payslip that date invalidates, returning which periods were
+// voided and which were reissued so the UI can say what happened.
+export async function recordEmployeeExit(employeeId, { lastWorkingDay, reason }) {
+    const response = await apiClient.post(`/employees/${employeeId}/exit`, { lastWorkingDay, reason });
+    return unwrap(response);
+}

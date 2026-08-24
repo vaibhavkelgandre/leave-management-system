@@ -75,6 +75,7 @@ The in-app notification bell. Every route below requires `requireAuth` only — 
 | `TEAM_MEMBER_ASSIGNED` | Manager (new or newly-assigned) | `PATCH /api/users/:id/manager`, `POST /api/users/invite` |
 | `SALARY_STRUCTURE_UPDATED` | Employee | `PATCH /api/employees/:id/salary-structure` |
 | `ACCOUNT_STATUS_CHANGED` | Employee | `PATCH /api/users/:id/status` |
+| `EMPLOYMENT_DATES_UPDATED` | Employee | `PATCH /api/employees/:id/employment-dates`, `POST /api/employees/:id/exit`. Deliberately quotes **no dates** — same restraint as `SALARY_STRUCTURE_UPDATED`, since a notification list is glanced at casually and often with someone else looking at the screen. The values are on the employee's profile page |
 | `DELEGATION_NOMINATED` | Delegate | `POST /api/delegations` |
 | `DELEGATION_STARTED` / `DELEGATION_ENDED` | Manager | **Time-based, not event-driven** — `notificationSweepService.js`, run hourly from `server.js`, not from any endpoint |
 | `INVITE_ACCEPTED` | The HR admin who sent the invite (`invited_by`) | `POST /api/auth/invitations/accept` |

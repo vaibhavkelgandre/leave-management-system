@@ -4,12 +4,13 @@
 // opened in its own small preview modal without leaving this page. Reached
 // from EmployeeVerificationPage.jsx's queue via a Link, not a click handler
 // that opens a modal.
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { getEmployeeForVerification, verifyEmployeeProfile, sendProfileBack } from "../services/userService.js";
 import { getDocumentsForEmployee } from "../services/employeeDocumentService.js";
 import { toErrorMessage } from "../services/httpError.js";
 import { EmployeeProfileSummary } from "../components/employees/EmployeeProfileSummary.jsx";
+import { EmploymentDatesCard } from "../components/employees/EmploymentDatesCard.jsx";
 import { EmployeeDocumentList } from "../components/employees/EmployeeDocumentList.jsx";
 import { SalaryStructureForm } from "../components/employees/SalaryStructureForm.jsx";
 import { Button } from "../components/ui/Button.jsx";
@@ -31,6 +32,16 @@ export function EmployeeVerificationDetailPage() {
     // didn't match their documents (see sendProfileBackSchema server-side).
     const [showSendBackPrompt, setShowSendBackPrompt] = useState(false);
     const [sendBackReason, setSendBackReason] = useState("");
+
+    // Refetch just the employee after the employment-dates card writes, so the
+    // joining date on screen is the one that was saved.
+    const reload = useCallback(
+        () =>
+            getEmployeeForVerification(id)
+                .then(setEmployee)
+                .catch((err) => setLoadError(toErrorMessage(err, "Unable to load this employee"))),
+        [id]
+    );
 
     useEffect(() => {
         let cancelled = false;
@@ -108,6 +119,12 @@ export function EmployeeVerificationDetailPage() {
             <PageHeader title={`${employee.first_name} ${employee.last_name}`} description={employee.email} />
 
             <div className="mt-6 space-y-6">
+                {/* This is the moment the joining date is supposed to be set:
+                    HR is reviewing the submitted profile with the signed offer
+                    letter in front of them, and the employee can no longer
+                    enter it themselves. */}
+                <EmploymentDatesCard employee={employee} onChanged={reload} />
+
                 <Card className="p-6">
                     <h3 className={sectionHeadingClasses}>Submitted profile details</h3>
                     <div className="mt-3">

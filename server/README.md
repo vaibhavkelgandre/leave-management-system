@@ -185,6 +185,18 @@ DELETE FROM users WHERE id = '<id>';
 
 Delete the employee first, then the manager, then HR — a user can't be removed while another still reports to them via `manager_id`.
 
+## 8. Audit the employment dates
+
+```bash
+npm run audit:employment-dates
+```
+
+Read-only; writes nothing and takes no flags. Prints the target database, then three lists: employees with **no joining date** (payroll treats null as "no restriction", so a mid-month joiner is paid a full month), employees whose joining date has **already been paid against** (the urgent list — check each against the signed offer letter), and employees with a leaving date recorded.
+
+It exists because `joining_date` was a self-editable profile field until recently while already driving `computeSlip`'s payable-day count, so every value currently stored was either entered by the employee or left null, and none of it was ever checked. Exit proration is only as trustworthy as those dates.
+
+Fix what it finds with `PATCH /api/employees/:id/employment-dates` (a plain correction) or `POST /api/employees/:id/exit` (records a leaving date and corrects the payslips it invalidates).
+
 ## Project layout
 
 ```

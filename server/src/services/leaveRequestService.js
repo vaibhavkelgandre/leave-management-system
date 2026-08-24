@@ -5,7 +5,7 @@
 // SQL, the controller stays thin glue, exactly like every other feature.
 import { findLeaveTypeById } from "../repositories/leaveTypeRepository.js";
 import { findAllHolidays } from "../repositories/holidayRepository.js";
-import { findDirectReports, findAuthContextById, isUserInSubtree } from "../repositories/userRepository.js";
+import { findDirectReports, findAuthContextById, findUserById, isUserInSubtree } from "../repositories/userRepository.js";
 import { isInActorsHrScope, getHrScopedEmployeeIds } from "./hrScopeService.js";
 import {
     insertLeaveRequest,
@@ -237,6 +237,18 @@ export async function submitLeaveRequest(
         if (!ACCEPTED_DOCUMENT_TYPES.has(detectedFileType)) {
             throw badRequest("Document must be a PDF, JPG or PNG file");
         }
+    }
+
+    // Leave cannot start after the employee's employment ends. Checked here
+    // rather than left to payroll, which clamps its own window and would simply
+    // ignore the days: the request itself would still sit in the employee's
+    // history holding pending or taken days for a period they were not employed
+    // for, which is a balance that can never be right. last_working_day is
+    // nullable — a missing value means "still employed", the same convention
+    // joining_date uses.
+    const employee = await findUserById(employeeId);
+    if (employee?.last_working_day && startDate > employee.last_working_day) {
+        throw badRequest(`Leave cannot start after the employee's last working day (${employee.last_working_day})`);
     }
 
     const holidays = await findAllHolidays({});
@@ -694,6 +706,19 @@ export async function decideLeaveRequest(actor, requestId, action, comment) {
     // an unauthorized caller should learn nothing about payroll, and an
     // illegal transition is the more fundamental complaint of the two.
     await assertPeriodsOpen(request, action);
+
+    // The submit-time check above can't cover a leaving date recorded *after*
+    // the request was raised, which is the common order of events: someone
+    // books leave, then resigns. Approving it would move days to `taken` for a
+    // period they were not employed for.
+    if (action === "APPROVE" || action === "HR_OVERRIDE_TO_APPROVED") {
+        const employee = await findUserById(request.employee_id);
+        if (employee?.last_working_day && request.start_date > employee.last_working_day) {
+            throw conflict(
+                `This leave starts after the employee's last working day (${employee.last_working_day}), so it can no longer be approved.`
+            );
+        }
+    }
 
     if (action === "CANCEL" && request.start_date <= todayDateKey()) {
         throw badRequest("Only a future, still-approved leave can be cancelled");

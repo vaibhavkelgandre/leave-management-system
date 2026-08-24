@@ -14,7 +14,14 @@
 // manual steps.
 import { describe, it, expect } from "vitest";
 import pool from "../../config/db.js";
-import { createRootHr, createUser, createSalaryStructure, createSalarySlip } from "./helpers/factories.js";
+import {
+    createRootHr,
+    createUser,
+    createSalaryStructure,
+    createSalarySlip,
+    createLeaveType,
+    createLeaveRequest,
+} from "./helpers/factories.js";
 import { loginAs } from "./helpers/authHelpers.js";
 import { updateProfileStatus } from "../../repositories/userRepository.js";
 
@@ -244,5 +251,79 @@ describe("Recording an employee exit (G22 part B)", () => {
 
         expect(row.status).toBe("skipped");
         expect(row.skipReason).toMatch(/already left/i);
+    });
+
+    it("blocks new leave that starts after the last working day", async () => {
+        const hr = await createRootHr({ email: "exit-leaveguard-hr@example.com" });
+        const employee = await payrollReadyEmployee("exit-leaveguard", hr);
+        const hrAgent = await loginAs(hr);
+        await hrAgent
+            .post(`/api/employees/${employee.id}/exit`)
+            .send({ lastWorkingDay: "2026-07-10", reason: "Resigned" })
+            .expect(200);
+
+        const leaveType = await createLeaveType({ name: "Exit Guard Leave", annualEntitlement: 20 });
+        const response = await (await loginAs(employee)).post("/api/leave-requests").send({
+            leaveTypeId: leaveType.id,
+            startDate: "2026-07-20",
+            endDate: "2026-07-21",
+            reason: "After my last day",
+        });
+
+        // Payroll would clamp its own window and simply ignore these days, but
+        // the request would still sit in the employee's history holding pending
+        // or taken days for a period they were not employed for.
+        expect(response.statusCode).toBe(400);
+        expect(response.body.message).toMatch(/last working day/i);
+    });
+
+    it("blocks approving leave when an exit is recorded after the request was raised", async () => {
+        const hr = await createRootHr({ email: "exit-approveguard-hr@example.com" });
+        const manager = await createUser({
+            role: "MANAGER",
+            managerId: hr.id,
+            email: "exit-approveguard-mgr@example.com",
+        });
+        const employee = await createUser({ managerId: manager.id, email: "exit-approveguard-emp@example.com" });
+        const leaveType = await createLeaveType({ name: "Exit Approve Guard Leave", annualEntitlement: 20 });
+
+        // The common order of events: book leave, then resign.
+        const leaveRequest = await createLeaveRequest({
+            employeeId: employee.id,
+            leaveTypeId: leaveType.id,
+            startDate: "2026-09-14",
+            endDate: "2026-09-15",
+        });
+        await (await loginAs(hr))
+            .post(`/api/employees/${employee.id}/exit`)
+            .send({ lastWorkingDay: "2026-08-31", reason: "Resigned" })
+            .expect(200);
+
+        const response = await (await loginAs(manager))
+            .post(`/api/leave-requests/${leaveRequest.id}/approve`)
+            .send({});
+
+        expect(response.statusCode).toBe(409);
+        expect(response.body.message).toMatch(/last working day/i);
+    });
+
+    it("notifies the employee that HR recorded their exit, without quoting the date", async () => {
+        const hr = await createRootHr({ email: "exit-notify-hr@example.com" });
+        const employee = await payrollReadyEmployee("exit-notify", hr);
+
+        await (await loginAs(hr))
+            .post(`/api/employees/${employee.id}/exit`)
+            .send({ lastWorkingDay: "2026-07-10", reason: "Resigned" })
+            .expect(200);
+
+        const notifications = await pool.query(
+            "SELECT message FROM notifications WHERE recipient_id = $1 AND type = 'EMPLOYMENT_DATES_UPDATED'",
+            [employee.id]
+        );
+        expect(notifications.rows).toHaveLength(1);
+        // A notification list is glanced at casually, often with someone else
+        // looking at the screen — so no dates and no figures in the message.
+        expect(notifications.rows[0].message).not.toMatch(/2026-07-10/);
+        expect(notifications.rows[0].message).toMatch(/last working day/i);
     });
 });

@@ -27,9 +27,14 @@ export function getNotificationRoute({ type, entity_id: entityId }) {
             return { pathname: "/dashboard/approvals", state: { selectedRequestId: entityId } };
         case "PROFILE_SUBMITTED":
             return { pathname: `/dashboard/profile-verification/${entityId}`, state: null };
+        // The self-facing profile-lifecycle bucket. EMPLOYMENT_DATES_UPDATED
+        // belongs here because the dates live on the employee's own profile
+        // page, which is also where the values are — the notification message
+        // deliberately carries none.
         case "PROFILE_VERIFIED":
         case "PROFILE_SENT_BACK":
         case "MANAGER_REASSIGNED":
+        case "EMPLOYMENT_DATES_UPDATED":
         case "SALARY_STRUCTURE_UPDATED":
         case "ACCOUNT_STATUS_CHANGED":
         case "PROFILE_CREATED":
