@@ -29,7 +29,10 @@ describe("HolidayForm", () => {
             startDate: "2027-01-26",
             endDate: "",
         });
-        expect(onSaved).toHaveBeenCalledWith("2027-01-26");
+        // The second argument is the list of live leave requests the holiday
+        // recounted — a holiday feeds the working-day calculation, so saving one
+        // can move balances, and the page needs to say so.
+        expect(onSaved).toHaveBeenCalledWith("2027-01-26", []);
     });
 
     it("creates a multi-day holiday and previews how many days it covers", async () => {

@@ -394,6 +394,51 @@ export async function updateLeaveRequestStatus(id, { status, decidedBy, decision
 // chronologically. No limit: the set is naturally tiny (anything already
 // notified today is deduped downstream), and capping it would silently leave
 // the oldest requests unreported.
+// Live requests whose dates overlap a given range.
+//
+// Input: two "YYYY-MM-DD" keys. Output: rows carrying enough to recompute and
+// report — the stored working_days, the half-day flags, the employee and the
+// leave type name.
+//
+// Only SUBMITTED and APPROVED, because those are the two statuses holding days
+// in the ledger. A rejected, withdrawn or cancelled request has already
+// released its days, so recounting it would move a balance for a request that
+// no longer affects one.
+export async function findLiveRequestsOverlapping(startDate, endDate) {
+    const result = await pool.query(
+        `SELECT lr.id, lr.employee_id, lr.leave_type_id, lr.start_date, lr.end_date,
+                lr.start_half_day, lr.end_half_day, lr.working_days, lr.status,
+                lt.name AS leave_type_name
+         FROM leave_requests lr
+         JOIN leave_types lt ON lt.id = lr.leave_type_id
+         WHERE lr.status IN ('SUBMITTED', 'APPROVED')
+           AND lr.end_date >= $1 AND lr.start_date <= $2
+         ORDER BY lr.start_date`,
+        [startDate, endDate]
+    );
+    return result.rows;
+}
+
+// Rewrites a request's cached working-day count.
+//
+// Input: a request id and the recomputed count. Output: the updated row, or
+// `null` for an unknown id.
+//
+// `working_days` is a derived cache, not history — the append-only record of
+// what happened lives in audit_logs, and the balance effect lives in
+// leave_balance_ledger. So correcting it in place is right, provided a
+// compensating ledger entry goes with it, which is what
+// leaveRequestService.reconcileWorkingDaysForHolidayChange does.
+export async function updateLeaveRequestWorkingDays(id, workingDays) {
+    const result = await pool.query(
+        `UPDATE leave_requests SET working_days = $2, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1
+         RETURNING id, working_days`,
+        [id, workingDays]
+    );
+    return result.rows[0] || null;
+}
+
 export async function findOverdueSubmittedRequests(cutoffDate) {
     const result = await pool.query(
         `SELECT lr.id, lr.employee_id, lr.start_date, lr.end_date, lr.working_days,
@@ -439,4 +484,19 @@ export async function findTotalLeaveWorkingDays(employeeId, startDate, endDate) 
         [employeeId, startDate, endDate]
     );
     return Number(result.rows[0].total_leave_days);
+}
+
+// How many requests of one leave type are still awaiting a decision.
+//
+// Input: a leave type id. Output: a count.
+//
+// Used only to warn HR when they deactivate a type: deactivating blocks new
+// requests but not decisions on existing ones, so a type can vanish from the
+// picker while approvals on it keep landing.
+export async function countSubmittedRequestsForLeaveType(leaveTypeId) {
+    const result = await pool.query(
+        "SELECT COUNT(*)::int AS count FROM leave_requests WHERE leave_type_id = $1 AND status = 'SUBMITTED'",
+        [leaveTypeId]
+    );
+    return result.rows[0].count;
 }

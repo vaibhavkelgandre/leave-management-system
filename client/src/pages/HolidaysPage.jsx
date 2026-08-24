@@ -20,6 +20,7 @@ export function HolidaysPage() {
     // Set right after saving a holiday so the calendar can jump to it; the
     // calendar itself owns month-to-month navigation via its own toolbar.
     const [focusDate, setFocusDate] = useState(null);
+    const [adjustmentNotice, setAdjustmentNotice] = useState(null);
 
     const [holidays, setHolidays] = useState([]);
     // Tracks which year `holidays` belongs to, so "loading" can be derived
@@ -86,8 +87,16 @@ export function HolidaysPage() {
         setSelectedHolidayId((current) => (current === holidayId ? null : holidayId));
     }
 
-    function handleSaved(savedStartDate) {
+    function handleSaved(savedStartDate, adjusted = []) {
         const savedYear = Number(savedStartDate.slice(0, 4));
+        // Said out loud because it is the surprising part: declaring one holiday
+        // can recount several people's live leave requests and move their
+        // balances. HR has no other way to find out.
+        setAdjustmentNotice(
+            adjusted.length
+                ? `${adjusted.length} leave request(s) were recounted and the affected balances adjusted.`
+                : null
+        );
         closeForm();
         setFocusDate(savedStartDate);
 
@@ -115,6 +124,13 @@ export function HolidaysPage() {
                     </RoleGate>
                 }
             />
+
+            {adjustmentNotice && (
+                <p className="mt-4 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                    {adjustmentNotice} Any payslip already issued for those periods has been voided — re-run payroll for
+                    it.
+                </p>
+            )}
 
             <Modal open={showForm} onClose={closeForm} title={editingHoliday ? "Edit holiday" : "New holiday"}>
                 <HolidayForm

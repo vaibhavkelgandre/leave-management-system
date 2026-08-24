@@ -422,6 +422,35 @@ export async function notifyDelegationNominated(delegation) {
 // list is glanced at casually and often with someone else looking at the
 // screen, and "your last working day is 10 July" is not something to put there.
 // The employee's profile page has the actual values.
+// Tells an employee that a leave request of theirs has been recounted after a
+// public holiday changed.
+//
+// Input: the request row (carrying the employee and leave type name), the old
+// and new working-day counts, and the acting HR user. Output: none. Never
+// throws.
+//
+// The figures *are* quoted here, unlike notifyEmploymentDatesUpdated — because
+// the whole point is that a number they were previously told has changed, and
+// "your leave was recounted" without saying from what to what is not
+// actionable. Leave day counts are also not sensitive in the way a salary is.
+export async function notifyLeaveDaysAdjusted(request, previousDays, newDays, actorId) {
+    try {
+        const direction = newDays < previousDays ? "returned to your balance" : "deducted from your balance";
+        const difference = Math.abs(newDays - previousDays);
+
+        await insertNotification({
+            recipientId: request.employee_id,
+            actorId,
+            type: "LEAVE_DAYS_ADJUSTED",
+            entityType: "LEAVE_REQUEST",
+            entityId: request.id,
+            message: `A public holiday changed within your ${request.leave_type_name} leave (${request.start_date} to ${request.end_date}). It now counts ${newDays} working day(s) instead of ${previousDays}, so ${difference} day(s) have been ${direction}.`,
+        });
+    } catch (error) {
+        console.error("Failed to create LEAVE_DAYS_ADJUSTED notification:", error.message);
+    }
+}
+
 export async function notifyEmploymentDatesUpdated(employeeId, actorId, change = "dates") {
     try {
         const message =

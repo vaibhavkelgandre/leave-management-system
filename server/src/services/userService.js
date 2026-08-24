@@ -24,7 +24,7 @@ import {
 } from "./employeeDocumentService.js";
 import { assertNoCycle } from "./reportingService.js";
 import { isInActorsHrScope, getHrScopedEmployeeIds } from "./hrScopeService.js";
-import { voidSlipsInconsistentWithEmploymentDates } from "./salarySlipService.js";
+import { voidInconsistentSlips } from "./salarySlipService.js";
 import { assertLegalProfileTransition } from "./profileVerificationStateMachine.js";
 import {
     notifyProfileSubmitted,
@@ -289,7 +289,7 @@ export async function processEmployeeExit(actor, employeeId, { lastWorkingDay, r
 
     // Runs after the write, never before: the consistency check reads the dates
     // off the employee row, so checking a stale row would find nothing wrong.
-    const { voided } = await voidSlipsInconsistentWithEmploymentDates(actor, updated, reason);
+    const { voided } = await voidInconsistentSlips(actor, updated, reason);
 
     await notifyEmploymentDatesUpdated(employeeId, actor.id, "exit"); // non-critical side effect
 
@@ -327,7 +327,7 @@ export async function updateEmploymentDates(actor, employeeId, { joiningDate, la
     // and try again. Voiding here does the same thing in one step and, unlike
     // the refusal, also catches a slip that an *older* date had already
     // pro-rated and which nothing would otherwise have revisited.
-    const { voided } = await voidSlipsInconsistentWithEmploymentDates(
+    const { voided } = await voidInconsistentSlips(
         actor,
         updated,
         "HR corrected this employee's employment dates"

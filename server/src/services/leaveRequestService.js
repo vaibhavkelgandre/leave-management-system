@@ -6,6 +6,8 @@
 import { findLeaveTypeById } from "../repositories/leaveTypeRepository.js";
 import { findAllHolidays } from "../repositories/holidayRepository.js";
 import { findDirectReports, findAuthContextById, findUserById, isUserInSubtree } from "../repositories/userRepository.js";
+import { notifyLeaveDaysAdjusted } from "./notificationService.js";
+import { voidInconsistentSlips } from "./salarySlipService.js";
 import { isInActorsHrScope, getHrScopedEmployeeIds } from "./hrScopeService.js";
 import {
     insertLeaveRequest,
@@ -15,8 +17,10 @@ import {
     countTeamLeaveRequests,
     findLeaveRequestsFiltered,
     findLeaveTakenReport,
+    findLiveRequestsOverlapping,
     findOverlappingLeaveRequest,
     updateLeaveRequestStatus,
+    updateLeaveRequestWorkingDays,
     countPendingDecisionsForManagers,
     countLeaveRequestsFiltered,
 } from "../repositories/leaveRequestRepository.js";
@@ -201,6 +205,100 @@ async function resolveActingCapacity(actor, request, action) {
 // persists anything. This is what lets the frontend show "this request will
 // use N days" before the employee actually submits (Module 3 spec, point 3),
 // using the exact same calculation the real submission will use.
+// Recounts every live leave request touched by a holiday change, and moves the
+// balance to match.
+//
+// Input: the acting HR user's id, and the date range of the holiday that was
+// added, moved or removed. Output: `{ adjusted }` — one entry per request whose
+// count changed, for the caller to report to HR.
+//
+// Why this is needed at all: `working_days` is computed once at submit and never
+// recomputed, and the ledger entries that moved days into pending or taken used
+// that stored figure. A holiday declared afterwards — which is normal, not an
+// edge case — therefore leaves the employee charged for a day that became a
+// holiday. Mon-Fri leave with a Wednesday holiday added later stays at five days
+// when it should be four, permanently.
+//
+// **The correction is an append, not a rewrite of history.** `working_days` on
+// the request is a derived cache and is updated in place, but the balance moves
+// via a new `HOLIDAY_ADJUSTMENT` ledger entry — which is exactly what
+// leave_balance_ledger is for (NFR-2: the balance must agree with the history
+// that produced it). Nothing in audit_logs is touched; the leave was still
+// submitted and decided when it was.
+//
+// Which ledger column moves depends on the status, and getting this wrong would
+// corrupt a balance in a way that is hard to see: a SUBMITTED request holds its
+// days in `pending`, an APPROVED one has already moved them to `taken`. Every
+// other status has released its days entirely and is deliberately not
+// considered (see findLiveRequestsOverlapping).
+export async function reconcileWorkingDaysForHolidayChange(actorId, startDate, endDate) {
+    const requests = await findLiveRequestsOverlapping(startDate, endDate);
+    if (!requests.length) {
+        return { adjusted: [] };
+    }
+
+    // One holiday fetch for the whole batch — calculateWorkingDays is pure and
+    // takes the list, so re-reading it per request would be the same answer at
+    // N times the cost.
+    const holidays = await findAllHolidays({});
+    const adjusted = [];
+
+    for (const request of requests) {
+        const previousDays = Number(request.working_days);
+        const recounted = calculateWorkingDays({
+            startDate: request.start_date,
+            endDate: request.end_date,
+            startHalfDay: request.start_half_day,
+            endHalfDay: request.end_half_day,
+            holidays,
+        });
+
+        if (recounted === previousDays) {
+            continue;
+        }
+
+        const delta = recounted - previousDays;
+        await updateLeaveRequestWorkingDays(request.id, recounted);
+
+        await insertLedgerEntry({
+            userId: request.employee_id,
+            leaveTypeId: request.leave_type_id,
+            year: Number(request.start_date.slice(0, 4)),
+            leaveRequestId: request.id,
+            pendingDelta: request.status === "SUBMITTED" ? delta : 0,
+            takenDelta: request.status === "APPROVED" ? delta : 0,
+            reason: "HOLIDAY_ADJUSTMENT",
+        });
+
+        await notifyLeaveDaysAdjusted(request, previousDays, recounted, actorId); // non-critical side effect
+
+        adjusted.push({
+            requestId: request.id,
+            employeeId: request.employee_id,
+            leaveTypeName: request.leave_type_name,
+            previousDays,
+            newDays: recounted,
+        });
+    }
+
+    // Payroll sums the *stored* working_days of approved leave, so a recount
+    // moves the LOP figure on any payslip already issued for those months. The
+    // consistency check compares LOP as well as employed days, so voiding here
+    // is the same mechanism an employment-date change uses — and the corrected
+    // figures come from HR re-running payroll, not from this call.
+    //
+    // One pass per affected employee rather than per request: two adjusted
+    // requests in the same month would otherwise try to void the same slip
+    // twice, and the second attempt is a wasted query.
+    for (const employeeId of new Set(adjusted.map((entry) => entry.employeeId))) {
+        const employee = await findUserById(employeeId);
+        if (!employee) continue;
+        await voidInconsistentSlips({ id: actorId }, employee, "A public holiday changed within approved leave");
+    }
+
+    return { adjusted };
+}
+
 export async function previewWorkingDays({ startDate, endDate, startHalfDay, endHalfDay }) {
     const holidays = await findAllHolidays({});
     return calculateWorkingDays({ startDate, endDate, startHalfDay, endHalfDay, holidays });

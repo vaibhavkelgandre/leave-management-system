@@ -413,8 +413,8 @@ function employedDaysInPeriod(employee, payPeriod) {
     return effectiveEnd < effectiveStart ? 0 : inclusiveDayCount(effectiveStart, effectiveEnd);
 }
 
-// Voids every issued payslip that no longer agrees with the employee's
-// employment dates, and tells them why.
+// Voids every issued payslip that no longer agrees with the leave and
+// employment record behind it, and tells the employee why.
 //
 // Input: the acting HR user, the employee row (already carrying the *new*
 // dates), and HR's stated reason. Output: `{ voided }` — the pay periods
@@ -439,7 +439,7 @@ function employedDaysInPeriod(employee, payPeriod) {
 // `payable_days + lop_days` reconstructs the employed-day count the slip was
 // built from, which is why the comparison uses it rather than `payable_days`
 // alone — otherwise every slip with any loss-of-pay would look inconsistent.
-export async function voidSlipsInconsistentWithEmploymentDates(actor, employee, reason) {
+export async function voidInconsistentSlips(actor, employee, reason) {
     const slips = await findSlipsByEmployeeIds([employee.id], {});
     const voided = [];
 
@@ -447,14 +447,32 @@ export async function voidSlipsInconsistentWithEmploymentDates(actor, employee, 
         const expectedDays = employedDaysInPeriod(employee, slip.pay_period);
         const slipDays = Number(slip.payable_days) + Number(slip.lop_days);
 
-        if (expectedDays === slipDays) {
+        // The second half of the comparison, and it closes a gap no
+        // decision-blocking rule could: LOP is summed from the *stored*
+        // working_days of approved leave, so it moves when a holiday is declared
+        // inside someone's leave (their leave is recounted), and it moves for
+        // every employee at once if a leave type's counts_as_lop flag is
+        // flipped. Neither involves a leave decision or a date change, so
+        // nothing would otherwise notice.
+        const { startDate, endDate } = monthRange(slip.pay_period);
+        const effectiveStart =
+            employee.joining_date && employee.joining_date > startDate ? employee.joining_date : startDate;
+        const effectiveEnd =
+            employee.last_working_day && employee.last_working_day < endDate ? employee.last_working_day : endDate;
+        const expectedLopDays =
+            effectiveEnd < effectiveStart ? 0 : await findLopWorkingDays(employee.id, effectiveStart, effectiveEnd);
+        const slipLopDays = Number(slip.lop_days);
+
+        if (expectedDays === slipDays && expectedLopDays === slipLopDays) {
             continue;
         }
 
         const explanation =
             expectedDays === 0
                 ? `${reason} — the employee was not employed during this period, so this payslip no longer applies.`
-                : `${reason} — employment dates changed: this period now covers ${expectedDays} employed day(s), not ${slipDays}. Voided so payroll can be re-run.`;
+                : expectedDays !== slipDays
+                  ? `${reason} — employment dates changed: this period now covers ${expectedDays} employed day(s), not ${slipDays}. Voided so payroll can be re-run.`
+                  : `${reason} — unpaid leave for this period changed: it now counts ${expectedLopDays} day(s), not ${slipLopDays}. Voided so payroll can be re-run.`;
 
         const result = await voidSlip(slip.id, { voidedBy: actor.id, reason: explanation });
         if (!result) continue; // already voided by someone else in the meantime

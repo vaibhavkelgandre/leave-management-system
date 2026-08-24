@@ -16,19 +16,19 @@ describe("Holidays", () => {
 
         const created = await agent.post("/api/holidays").send({ name: "New Year", startDate: "2027-01-01" });
         expect(created.statusCode).toBe(201);
-        expect(created.body.data.end_date).toBe("2027-01-01");
+        expect(created.body.data.holiday.end_date).toBe("2027-01-01");
 
         const updated = await agent
-            .patch(`/api/holidays/${created.body.data.id}`)
+            .patch(`/api/holidays/${created.body.data.holiday.id}`)
             .send({ name: "New Year's Day", startDate: "2027-01-01" });
         expect(updated.statusCode).toBe(200);
-        expect(updated.body.data.name).toBe("New Year's Day");
+        expect(updated.body.data.holiday.name).toBe("New Year's Day");
 
-        const deleted = await agent.delete(`/api/holidays/${created.body.data.id}`);
+        const deleted = await agent.delete(`/api/holidays/${created.body.data.holiday.id}`);
         expect(deleted.statusCode).toBe(200);
 
         const list = await agent.get("/api/holidays");
-        expect(list.body.data.find((h) => h.id === created.body.data.id)).toBeUndefined();
+        expect(list.body.data.find((h) => h.id === created.body.data.holiday.id)).toBeUndefined();
     });
 
     it("creates a multi-day holiday spanning a date range", async () => {
@@ -40,8 +40,12 @@ describe("Holidays", () => {
             .send({ name: "Diwali", startDate: "2027-10-16", endDate: "2027-10-20" });
 
         expect(created.statusCode).toBe(201);
-        expect(created.body.data.start_date).toBe("2027-10-16");
-        expect(created.body.data.end_date).toBe("2027-10-20");
+        // A write response is now `{ holiday, adjusted }`: a holiday feeds the
+        // working-day calculation, so creating one can recount live leave
+        // requests, and HR needs to be told how many.
+        expect(created.body.data.holiday.start_date).toBe("2027-10-16");
+        expect(created.body.data.holiday.end_date).toBe("2027-10-20");
+        expect(created.body.data.adjusted).toEqual([]);
     });
 
     it("rejects writes from a non-HR caller", async () => {

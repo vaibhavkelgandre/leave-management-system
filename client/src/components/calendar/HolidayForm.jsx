@@ -45,13 +45,18 @@ export function HolidayForm({ holiday, onSaved }) {
         setSubmitting(true);
         setFormError(null);
 
+        let result;
         try {
             if (isEditing) {
-                await updateHoliday(holiday.id, form);
+                result = await updateHoliday(holiday.id, form);
             } else {
-                await createHoliday(form);
+                result = await createHoliday(form);
             }
-            onSaved(form.startDate);
+            // A holiday is global and feeds the working-day calculation, so
+            // saving one can recount live leave requests and move balances.
+            // The count is handed to the page rather than shown here, because
+            // onSaved closes this form — a message inside it would vanish.
+            onSaved(form.startDate, result?.adjusted ?? []);
         } catch (err) {
             setFormError(toErrorMessage(err, isEditing ? "Unable to update holiday" : "Unable to create holiday"));
         } finally {
