@@ -90,6 +90,25 @@ export async function loginWithGoogle(idToken) {
     return { token, user };
 }
 
+// Reports whether this deployment still needs its first account.
+//
+// Input: none. Output: `{ needsBootstrap }` — true only while no SUPER_ADMIN
+// exists. Never throws for a missing role row: an unmigrated database has no
+// SUPER_ADMIN either, and the honest answer to "does one exist" is still no.
+//
+// Deliberately public, because the caller is a signed-out visitor on the login
+// page and there is nobody to authenticate as yet. It exposes exactly one bit,
+// and only ever reports `true` for a database with no accounts in it —
+// `registerHrRoot` still demands HR_REGISTRATION_CODE, so knowing the answer
+// grants nothing that POSTing to it and reading the 409 wouldn't.
+export async function getBootstrapStatus() {
+    const role = await findRoleByName("SUPER_ADMIN");
+    if (!role) {
+        return { needsBootstrap: true };
+    }
+    return { needsBootstrap: !(await existsUserWithRole(role.id)) };
+}
+
 // Bootstraps the single SUPER_ADMIN account using a shared secret code instead
 // of an invite — this is the one path into the system that isn't gated by an
 // existing user, so it exists solely to get the first admin set up. Formerly

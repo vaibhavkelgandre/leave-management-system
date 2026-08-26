@@ -14,12 +14,23 @@ export function ManagerSelect({ id, label, value, onChange, options, allowNone =
         return groups;
     }, {});
 
-    const helperText =
-        targetRole === "MANAGER"
-            ? "Managers report directly to an HR admin — pick who they'll answer to."
-            : targetRole === "HR_ADMIN"
-              ? "HR admins report to whichever HR admin created them — pick yourself or another HR admin."
-              : "Pick the person they'll go to for approvals and questions.";
+    // A freshly set-up organisation has only a SUPER_ADMIN, and the reporting
+    // rules (reportingService.ALLOWED_MANAGER_ROLES) let SUPER_ADMIN be the
+    // manager of an HR_ADMIN and nothing else. So picking "Employee" or
+    // "Manager" as the very first invite leaves this list genuinely empty —
+    // and an empty <select> with no explanation reads as a broken form rather
+    // than as "invite an HR admin first", which is the actual next step.
+    const hasCandidates = options.length > 0;
+
+    const helperText = !hasCandidates
+        ? targetRole === "MANAGER"
+          ? "There's no HR admin to report to yet. Invite an HR admin first — managers can only report to one."
+          : "There's no manager or HR admin to report to yet. Invite an HR admin first, and they can build out the rest of the team."
+        : targetRole === "MANAGER"
+          ? "Managers report directly to an HR admin — pick who they'll answer to."
+          : targetRole === "HR_ADMIN"
+            ? "HR admins report to whichever HR admin created them — pick yourself or another HR admin."
+            : "Pick the person they'll go to for approvals and questions.";
 
     return (
         <div>
@@ -30,10 +41,19 @@ export function ManagerSelect({ id, label, value, onChange, options, allowNone =
                     value={value}
                     onChange={onChange}
                     required={required}
-                    className="w-full cursor-pointer appearance-none rounded-md border border-slate-300 bg-white px-3 py-2 pr-8 text-sm text-slate-900 shadow-sm transition hover:border-indigo-300 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    disabled={!hasCandidates && !allowNone}
+                    className={`w-full appearance-none rounded-md border border-slate-300 px-3 py-2 pr-8 text-sm shadow-sm transition focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 ${
+                        !hasCandidates && !allowNone
+                            ? "cursor-not-allowed bg-slate-50 text-slate-400"
+                            : "cursor-pointer bg-white text-slate-900 hover:border-indigo-300"
+                    }`}
                 >
                     {allowNone && <option value="">No manager</option>}
-                    {!allowNone && <option value="" disabled>Who will they report to?</option>}
+                    {!allowNone && (
+                        <option value="" disabled>
+                            {hasCandidates ? "Who will they report to?" : "Nobody available yet"}
+                        </option>
+                    )}
                     {["SUPER_ADMIN", "HR_ADMIN", "MANAGER"].map(
                         (role) =>
                             grouped[role]?.length > 0 && (
@@ -60,7 +80,9 @@ export function ManagerSelect({ id, label, value, onChange, options, allowNone =
                     />
                 </svg>
             </div>
-            <p className="mt-1 text-xs text-slate-500">{helperText}</p>
+            <p className={`mt-1 text-xs ${hasCandidates ? "text-slate-500" : "font-medium text-amber-700"}`}>
+                {helperText}
+            </p>
         </div>
     );
 }

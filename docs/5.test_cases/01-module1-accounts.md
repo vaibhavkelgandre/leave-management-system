@@ -156,6 +156,34 @@
 - My Team: direct vs. extended team split, profile-status tags, manager-change and activate/deactivate wired up
 - Creator-only edit restrictions mirrored client-side for both manager-change and activate/deactivate, including the "no recorded creator" and "root HR admin" cases
 
+**Server — `bootstrapStatus.test.js`** (6 tests)
+- Reports `needsBootstrap: true` on an empty database and `false` once a `SUPER_ADMIN` exists
+- Still `true` when HR admins exist but no super admin — the question is about the root, not about headcount
+- Needs no authentication, which is the whole point: the caller has no session yet
+- Flips to `false` immediately after a bootstrap registration, so the client guard for `/register` can't hold a stale `true`
+- Leaks nothing beyond the one flag — no count, no administrator identity
+
+**Client — `RegisterSuperAdminPage.test.jsx`** (6 tests)
+- Submits every field the server requires, registration code included
+- Refuses a mismatched confirmation or a short password without a round trip
+- Surfaces the server's own message for a wrong code (`401`) and for a deployment someone else already set up (`409`), the latter with a route back to sign-in
+- Says where the registration code comes from, since there is nowhere else to look it up
+
+**Client — `LoginPage.test.jsx`** (4 tests)
+- Shows only the form on a configured deployment, with no late flash of the setup panel
+- Offers the setup route when no super admin exists, linking to `/register`
+- Keeps the sign-in form visible beside the panel — a mistyped URL should still land somewhere recognisable
+- Falls back to the ordinary page when the status call fails
+
+**Client — `BootstrapOnlyRoute.test.jsx`** (3 tests)
+- Renders the setup form only while no super admin exists; redirects to sign-in once one does
+- Renders neither while the answer is in flight, so an already-configured deployment never flashes a registration page
+
+**Client — `ManagerSelect.test.jsx`** (6 tests)
+- Lists eligible managers grouped by role and labels the viewer's own option "You"
+- **The first-invite dead end**: with no eligible manager it disables the picker and says to invite an HR admin first, rather than rendering an empty `<select>` that reads as a broken form. `SUPER_ADMIN` may manage an `HR_ADMIN` and nobody else, so this is the ordinary state of a brand-new organisation
+- Stays enabled when "No manager" is a legitimate answer — an empty list is only an error state when a manager is required
+
 ### 🔴🟡 Gaps
 
 > ✅ **Two 🔴 gaps previously listed here are closed** (see the covered sections above). Both are recorded in

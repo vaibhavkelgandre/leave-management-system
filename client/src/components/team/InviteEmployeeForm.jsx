@@ -76,6 +76,16 @@ export function InviteEmployeeForm({ onInvited, secondaryAction }) {
     const reportingLabel =
         form.role === ROLES.MANAGER ? "Reporting HR admin" : form.role === ROLES.HR_ADMIN ? "Reports to" : "Manager";
 
+    // Every role invited through this form must name a manager, so with no
+    // eligible candidate the invite cannot be completed at all. That is not a
+    // hypothetical: on a freshly set-up organisation the only account is the
+    // SUPER_ADMIN, who may manage an HR_ADMIN and nobody else — so the first
+    // invite has to be an HR admin, and choosing any other role here strands
+    // the form. Blocking submit (and saying why, via ManagerSelect's own
+    // helper text) beats letting it 422 with a message about a field the user
+    // was never given a way to fill.
+    const canSubmit = reportingOptions.length > 0;
+
     async function handleInvite(event) {
         event.preventDefault();
         setInviteError(null);
@@ -221,7 +231,7 @@ export function InviteEmployeeForm({ onInvited, secondaryAction }) {
                     form's action row in this app (e.g. PayrollRunForm.jsx). */}
                 <div className="flex items-center justify-end gap-2 pt-2">
                     {secondaryAction}
-                    <Button type="submit" loading={submitting}>
+                    <Button type="submit" loading={submitting} disabled={!canSubmit}>
                         Invite
                     </Button>
                 </div>

@@ -38,11 +38,39 @@ Liveness probe. No auth, no DB call.
 
 ## Auth (`/api/auth`)
 
+### `GET /api/auth/bootstrap-status`
+
+Reports whether this deployment still needs its first account, so the signed-out sign-in page can offer the one-time
+setup route instead of a form no credential can satisfy. Before it existed, the only way to answer the question was to
+POST to `register/hr` and read the `409` — so a fresh deployment's first visitor had nothing to go on but the README.
+
+**Auth**: none (public). The caller has no session and there is nobody to authenticate as.
+
+**Response** `200`
+```json
+{ "success": true, "message": "Bootstrap status", "data": { "needsBootstrap": true } }
+```
+
+`needsBootstrap` is `true` only while no `SUPER_ADMIN` exists. An unmigrated database (no `SUPER_ADMIN` role row) also
+answers `true` — there is no super admin either way, and that is the honest answer.
+
+**Why it is safe to leave public**: it exposes exactly one bit, and only ever answers `true` for a database with no
+accounts in it. `register/hr` still demands `HR_REGISTRATION_CODE`, so knowing the answer grants nothing that POSTing
+and reading the `409` wouldn't. The response body carries nothing else — no count, no administrator identity — and
+there is a test pinning that.
+
+**Client surfaces**: `LoginPage` renders a "No administrator account yet" panel with a link to `/register`, and
+`BootstrapOnlyRoute` uses the same answer to redirect away from `/register` once an account exists. Both read it
+through one hook (`useBootstrapStatus`) deliberately: a login page saying "set one up" beside a `/register` that
+bounces back to it is an infinite loop, and a single source is what prevents the two disagreeing.
+
 ### `POST /api/auth/register/hr`
 
 Creates the single `SUPER_ADMIN` account, gated by a shared secret — **singleton**: rejects with `409` if one already exists. That `409` is guaranteed, not best-effort: since migration `038` the singleton is enforced by a partial unique index (`uq_users_single_super_admin`), so two simultaneous calls resolve to exactly one `201` and one `409` rather than both succeeding. Formerly created an unlimited number of manager-less root `HR_ADMIN` accounts; repurposed so the true top of the reporting tree is created exactly once. Always creates the account with `manager_id: null`, and `profile_status: 'VERIFIED'` immediately — nobody is positioned to verify SUPER_ADMIN's own profile, so it skips the normal `INCOMPLETE -> SUBMITTED -> VERIFIED` workflow entirely.
 
 **Auth**: none (public), but requires the correct `registrationCode`.
+
+**UI**: `/register` (`RegisterSuperAdminPage`), reached from the sign-in page's own setup panel — see `GET /api/auth/bootstrap-status` above. It was API-only until then, which meant a new deployment could only be set up with curl or Postman.
 
 **Body**
 ```json

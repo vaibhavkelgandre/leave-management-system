@@ -13,6 +13,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import pool from "../../config/db.js";
 import { seedDemoEnvironment } from "../../scripts/seedDemo.js";
 import { createSuperAdmin, createUser, createLeaveType, createHoliday } from "./helpers/factories.js";
+import { verifyPassword } from "../../utils/password.js";
 
 const DEMO_EMAILS = ["demo.hr@example.com", "demo.manager@example.com", "demo.employee@example.com"];
 const originalPassword = process.env.DEMO_PASSWORD;
@@ -36,6 +37,13 @@ async function demoUsers() {
         [DEMO_EMAILS]
     );
     return result.rows;
+}
+
+// Reads the stored hash directly: the seed's only observable effect on an
+// existing row is that this value changes, and nothing else may.
+async function hashOf(email) {
+    const result = await pool.query("SELECT password_hash FROM users WHERE email = $1", [email]);
+    return result.rows[0]?.password_hash ?? null;
 }
 
 describe("seedDemoEnvironment", () => {
@@ -145,6 +153,51 @@ describe("seedDemoEnvironment", () => {
              JOIN users u ON u.id = lr.employee_id WHERE u.email = 'demo.employee@example.com'`
         );
         expect(requests.rows[0].count).toBe(3);
+    });
+
+    it("resets the demo passwords only when asked, so a lost demo login is recoverable", async () => {
+        await createSuperAdmin({ email: "seed-super-reset@example.com" });
+        await createLeaveType({ name: "Seed Reset Leave", annualEntitlement: 20 });
+        await seedDemoEnvironment({ apply: true });
+
+        const before = await hashOf("demo.hr@example.com");
+
+        // Without the flag, a re-run leaves the hash alone -- that is the
+        // "never modify an existing row" property the script depends on.
+        await seedDemoEnvironment({ apply: true });
+        expect(await hashOf("demo.hr@example.com")).toBe(before);
+
+        process.env.DEMO_PASSWORD = "a-different-demo-password";
+        const report = await seedDemoEnvironment({ apply: true, resetPasswords: true });
+
+        expect(report.accounts.map((entry) => entry.action)).toEqual([
+            "password reset",
+            "password reset",
+            "password reset",
+        ]);
+        // The new password verifies, which is the point -- these are
+        // @example.com addresses, so a reset link can never reach them.
+        const after = await hashOf("demo.hr@example.com");
+        expect(after).not.toBe(before);
+        expect(await verifyPassword("a-different-demo-password", after)).toBe(true);
+    });
+
+    it("never resets the password of an account that isn't one of the three demo logins", async () => {
+        const superAdmin = await createSuperAdmin({ email: "seed-super-scope@example.com" });
+        const realPerson = await createUser({ email: "seed-real-login@example.com", managerId: superAdmin.id });
+        await createLeaveType({ name: "Seed Scope Leave", annualEntitlement: 20 });
+        await seedDemoEnvironment({ apply: true });
+
+        const before = await hashOf("seed-real-login@example.com");
+        process.env.DEMO_PASSWORD = "yet-another-demo-password";
+        await seedDemoEnvironment({ apply: true, resetPasswords: true });
+
+        // The flag is scoped to the three DEMO_ACCOUNTS literals. A real
+        // colleague's login must be unreachable from it, including the super
+        // admin the chain hangs from.
+        expect(await hashOf("seed-real-login@example.com")).toBe(before);
+        expect(realPerson.id).toBeDefined();
+        expect(await hashOf("seed-super-scope@example.com")).toBeTruthy();
     });
 
     it("leaves existing users, leave types and holidays exactly as they were", async () => {

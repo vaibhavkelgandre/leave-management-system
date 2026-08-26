@@ -3,6 +3,10 @@
 //   node src/scripts/seedDemo.js              plan only, writes nothing
 //   node src/scripts/seedDemo.js --yes        actually create what's missing
 //   node src/scripts/seedDemo.js --yes --allow-production
+//   node src/scripts/seedDemo.js --yes --reset-passwords
+//                                             re-set the three demo accounts'
+//                                             password to DEMO_PASSWORD, for a
+//                                             demo login nobody wrote down
 //
 // Deliverable #2 asks for a deployed app seeded with a reporting structure at
 // least three levels deep, two leave types, a holiday calendar, and one demo
@@ -33,7 +37,14 @@
 // documented in server/README.md.
 import dotenv from "dotenv";
 import pool from "../config/db.js";
-import { findAllUsers, findUserById, findInviteeByEmail, insertUser, updateProfileStatus } from "../repositories/userRepository.js";
+import {
+    findAllUsers,
+    findUserById,
+    findInviteeByEmail,
+    insertUser,
+    updateProfileStatus,
+    updatePasswordHash,
+} from "../repositories/userRepository.js";
 import { findRoleByName } from "../repositories/roleRepository.js";
 import { findAllLeaveTypes } from "../repositories/leaveTypeRepository.js";
 import { seedBalancesForUser } from "../services/leaveBalanceService.js";
@@ -107,9 +118,23 @@ function pickDemoLeaveType(leaveTypes) {
 // actually uses — `employee_code` is never populated. An existing account is
 // returned untouched, never updated to match this file, because it might be
 // somebody's real account that happens to share the address.
-async function ensureAccount(account, managerId, roleId, passwordHash) {
+async function ensureAccount(account, managerId, roleId, passwordHash, resetPasswords = false) {
     const existing = await findInviteeByEmail(account.email);
     if (existing) {
+        // The one exception to "never modify an existing row", and it is opt-in
+        // for a reason: a demo password nobody wrote down is otherwise
+        // unrecoverable, because these are @example.com addresses that can
+        // never receive a reset link. Scoped to exactly the three DEMO_ACCOUNTS
+        // literals above -- no other address can reach this line.
+        if (resetPasswords) {
+            await updatePasswordHash(existing.id, passwordHash);
+            return {
+                email: account.email,
+                role: account.role,
+                action: "password reset",
+                user: await findUserById(existing.id),
+            };
+        }
         return { email: account.email, role: account.role, action: "exists", user: await findUserById(existing.id) };
     }
 
@@ -217,7 +242,7 @@ async function seedDemoActivity(employee, manager, leaveType) {
 //
 // Exported separately from the CLI below so it can be driven from a test
 // rather than by spawning a process.
-export async function seedDemoEnvironment({ apply = false } = {}) {
+export async function seedDemoEnvironment({ apply = false, resetPasswords = false } = {}) {
     const password = process.env.DEMO_PASSWORD;
     if (!password) {
         throw new Error(
@@ -256,7 +281,7 @@ export async function seedDemoEnvironment({ apply = false } = {}) {
             report.accounts.push({
                 email: account.email,
                 role: account.role,
-                action: existing ? "exists" : "would create",
+                action: existing ? (resetPasswords ? "would reset password" : "exists") : "would create",
             });
         }
         report.activity.push({
@@ -280,7 +305,7 @@ export async function seedDemoEnvironment({ apply = false } = {}) {
             throw new Error(`Role ${account.role} is not configured — check the roles table.`);
         }
 
-        const result = await ensureAccount(account, managerId, role.id, passwordHash);
+        const result = await ensureAccount(account, managerId, role.id, passwordHash, resetPasswords);
         report.accounts.push({ email: result.email, role: result.role, action: result.action });
         created[account.role] = result.user;
 
@@ -348,6 +373,10 @@ async function main() {
     const flags = process.argv.slice(2);
     const apply = flags.includes("--yes");
     const allowProduction = flags.includes("--allow-production");
+    // Separate from --yes on purpose: --yes alone still means "create what is
+    // missing, touch nothing else", which is the property that makes this
+    // script safe to point at a database with real records.
+    const resetPasswords = flags.includes("--reset-passwords");
 
     try {
         // Checked before anything is read, and named explicitly in the message:
@@ -365,7 +394,7 @@ async function main() {
             return;
         }
 
-        const report = await seedDemoEnvironment({ apply });
+        const report = await seedDemoEnvironment({ apply, resetPasswords });
         printReport(report, { apply });
 
         if (!apply) {

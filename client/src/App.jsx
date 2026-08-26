@@ -1,6 +1,7 @@
 import { Routes, Route } from "react-router-dom";
 import { HomePage } from "./pages/HomePage.jsx";
 import { LoginPage } from "./pages/LoginPage.jsx";
+import { RegisterSuperAdminPage } from "./pages/RegisterSuperAdminPage.jsx";
 import { ForgotPasswordPage } from "./pages/ForgotPasswordPage.jsx";
 import { ResetPasswordPage } from "./pages/ResetPasswordPage.jsx";
 import { AcceptInvitePage } from "./pages/AcceptInvitePage.jsx";
@@ -29,6 +30,7 @@ import { AppLayout } from "./components/layout/AppLayout.jsx";
 import { RequireAuth } from "./components/routing/RequireAuth.jsx";
 import { RequireRole } from "./components/routing/RequireRole.jsx";
 import { PublicOnlyRoute } from "./components/routing/PublicOnlyRoute.jsx";
+import { BootstrapOnlyRoute } from "./components/routing/BootstrapOnlyRoute.jsx";
 import { ROLES } from "./constants/roles.js";
 
 function App() {
@@ -39,6 +41,16 @@ function App() {
             <Route element={<PublicOnlyRoute />}>
                 <Route path="/login" element={<LoginPage />} />
                 <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+
+                {/* Nested inside PublicOnlyRoute on purpose, so that guard
+                    still owns where a newly-authenticated user lands — the
+                    setup form signs its own creator in, and this route must
+                    not race it to /login on a status answer that is stale the
+                    instant the account exists. BootstrapOnlyRoute only decides
+                    whether the form may be seen at all. */}
+                <Route element={<BootstrapOnlyRoute />}>
+                    <Route path="/register" element={<RegisterSuperAdminPage />} />
+                </Route>
             </Route>
 
             <Route path="/reset-password/:token" element={<ResetPasswordPage />} />

@@ -9,6 +9,18 @@ import { setAuthCookie, clearAuthCookie } from "../utils/cookies.js";
 // using the shared registration code — there is no public sign-up, so this is
 // the only way into the system before any invites exist. Singleton-guarded in
 // authService.registerHrRoot: a second call is rejected once one exists.
+// GET /api/auth/bootstrap-status — public. Lets the signed-out login page say
+// "no administrator account exists yet" and offer the one-time setup route,
+// instead of a visitor facing a login form no credential can ever satisfy.
+export async function getBootstrapStatus(req, res, next) {
+    try {
+        const status = await authService.getBootstrapStatus();
+        sendSuccess(res, 200, "Bootstrap status", status);
+    } catch (error) {
+        next(error);
+    }
+}
+
 export async function registerHrAdmin(req, res, next) {
     try {
         const { token, user } = await authService.registerHrRoot(req.body);

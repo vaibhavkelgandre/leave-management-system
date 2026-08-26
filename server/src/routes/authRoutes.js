@@ -1,5 +1,6 @@
 import express from "express";
 import {
+    getBootstrapStatus,
     registerHrAdmin,
     login,
     googleLogin,
@@ -24,6 +25,9 @@ import {
 
 const router = express.Router();
 
+// Public and unauthenticated on purpose — read by the login page before
+// anyone can possibly hold a session. No validator: it takes no input.
+router.get("/bootstrap-status", getBootstrapStatus);
 router.post("/register/hr", validateBody(registerHrSchema), registerHrAdmin);
 router.post("/login", validateBody(loginSchema), login);
 router.post("/google", validateBody(googleLoginSchema), googleLogin);

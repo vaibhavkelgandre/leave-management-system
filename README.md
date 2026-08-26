@@ -45,16 +45,60 @@ The two suites run sequentially, deliberately: they compete for the same machine
 produced timeouts that look like real failures. The root `package.json` is only a task runner — each half keeps its
 own dependencies, so `npm install` still belongs in `server/` and `client/`.
 
+## Setting up a fresh deployment
+
+A brand-new deployment has no accounts at all, so nobody can sign in. Open the app and the sign-in page says so, with
+a link to `/register` — fill in your name, email and password plus the `HR_REGISTRATION_CODE` from the server's
+environment, and you get the single `SUPER_ADMIN` account that owns the deployment. Creating it signs you in.
+
+From there everything is invitation-driven: invite an HR admin first (the reporting rules let the super admin manage
+an HR admin and nobody else), and they build out managers and employees from their own branch. Leave types and
+holidays can be created by either role, in any order — adding a leave type backfills a balance row for everyone who
+already exists.
+
+`/register` is reachable only while no super admin exists; afterwards it redirects to sign-in, and the endpoint itself
+answers `409`. There is exactly one super admin per deployment, enforced by a partial unique index rather than only by
+a check, so two simultaneous attempts resolve to one success and one refusal.
+
+> One deployment serves one organisation. There is no tenant column in the schema, so several organisations cannot
+> share an instance — each needs its own deployment and its own registration code.
+
+---
+
 ## Demo logins
+
+Reviewers can sign in as any of the three roles and see the difference immediately:
+
+| Email | Role | Sees |
+|---|---|---|
+| `demo.hr@example.com` | HR&nbsp;admin | their own branch, payroll, reports, profile verification, override |
+| `demo.manager@example.com` | Manager | their team's approvals, team calendar, delegation |
+| `demo.employee@example.com` | Employee | their own balances, requests and payslips |
+
+All three share the password **`DemoPass123!`**.
+
+These are deliberately the *only* published credentials, and they are safe to publish because this deployment holds
+test data only. They are also `@example.com` — reserved by RFC 2606, so no mail can ever be delivered to them, which
+is why the reset flow is not a way back in if the password is changed. Use `--reset-passwords` below instead.
+
+To create them:
 
 ```bash
 npm run seed          # plan only, writes nothing
 npm run seed -- --yes # create what's missing
 ```
 
-Creates three accounts — `demo.hr@`, `demo.manager@`, `demo.employee@example.com` — sharing the password you pass in
-`DEMO_PASSWORD` (never defaulted, never committed), wired into a four-level chain under the existing `SUPER_ADMIN`,
-plus a pending/approved/rejected leave request each so every role has something to look at.
+```bash
+npm run seed -- --yes --reset-passwords   # re-set the three demo passwords to DEMO_PASSWORD
+```
+
+The password comes from `DEMO_PASSWORD`, which is never defaulted and never committed — set it for the one command.
+`--reset-passwords` is the single exception to "never modify an existing row" and is scoped to exactly those three
+addresses; it exists because a demo password nobody wrote down is otherwise unrecoverable on an address that cannot
+receive mail. Without the flag, a re-run still leaves every existing account untouched.
+
+The accounts are wired into a four-level chain under the existing `SUPER_ADMIN`, plus a pending/approved/rejected
+leave request each so every role has something to look at.
 
 It is an **ensure** step, not an environment builder: existing users, leave types, holidays, documents and payroll are
 never created or modified, because both databases already hold real records. Plan-by-default, idempotent, prints its

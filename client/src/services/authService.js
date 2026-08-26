@@ -15,6 +15,43 @@ export function normalizeUser(raw) {
     };
 }
 
+// Whether this deployment still has no SUPER_ADMIN, i.e. nobody can sign in
+// yet and the one-time setup route is the only way forward.
+//
+// Input: none. Output: `true`/`false`. Never throws — a failure here must not
+// stop the sign-in form rendering, so an unreachable API or an unmigrated
+// database is reported as `false` and the visitor gets the ordinary login
+// page. Failing the other way would show a stranger a registration form
+// because of a network blip.
+export async function needsBootstrap() {
+    try {
+        const response = await apiClient.get("/auth/bootstrap-status", { skipAuthRedirect: true });
+        return unwrap(response)?.needsBootstrap === true;
+    } catch {
+        return false;
+    }
+}
+
+// Creates the single SUPER_ADMIN account that owns this deployment, and signs
+// them in — the server sets the auth cookie on the same response.
+//
+// Input: the registration code from the server's environment plus the admin's
+// name, email and password. Output: the normalized user. Throws an HttpError:
+// 401 for a wrong code, 409 once an account already exists, 422 for a field
+// the server rejected.
+export async function registerSuperAdmin({ registrationCode, firstName, lastName, email, password }) {
+    try {
+        const response = await apiClient.post(
+            "/auth/register/hr",
+            { registrationCode, firstName, lastName, email, password },
+            { skipAuthRedirect: true }
+        );
+        return normalizeUser(unwrap(response)?.user);
+    } catch (error) {
+        throw toHttpError(error);
+    }
+}
+
 export async function login({ email, password }) {
     try {
         const response = await apiClient.post(
