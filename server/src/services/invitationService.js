@@ -1,3 +1,15 @@
+// Invitations — the only way an account other than the SUPER_ADMIN comes into
+// existence (FR-003/FR-004).
+//
+// The link is a 256-bit random token, stored only as a SHA-256 hash and
+// single-use (`accepted_at`), with a window measured in hours. That window is a
+// security parameter, not a convenience setting: it is clamped in code so a
+// typo in the environment can't mint a credential valid for months.
+//
+// The pending account exists in the database from the moment the invite is
+// sent, which is why an unaccepted invitation is eventually *deleted* rather
+// than merely expired — otherwise the email address stays taken forever by
+// somebody who never joined.
 import {
     insertUser,
     findUserById,
@@ -209,6 +221,24 @@ async function reissueInvitation(existingUser, actor) {
     return { user, inviteLink, emailSent, expiresAt, reissued: true };
 }
 
+// Input: the new person's details plus the acting HR user. Output:
+// `{ user, inviteLink, emailSent, expiresAt, reissued }`.
+//
+// Throws 409 for an address that already has an active account, or a pending
+// invite the caller isn't entitled to resend; 400/422 for a reporting line the
+// hierarchy rules don't allow.
+//
+// Re-inviting a still-pending address **reissues** the link rather than
+// failing, because that is the ordinary outcome of an emailed link — spam
+// folder, deleted mail, ignored mail — and there is no separate resend
+// endpoint. `reissued` tells the caller which happened so the UI can say
+// "re-sent" rather than "created".
+//
+// `emailSent` is a real signal, not decoration: when mail is switched off or
+// fails, `inviteLink` is the *only* way to onboard the person, and the UI
+// promotes it accordingly. A mail failure never fails the request — the user,
+// their balances and the invitation are all committed first, so throwing would
+// show HR an error beside an employee who genuinely exists.
 export async function inviteEmployee({ firstName, lastName, email, role, managerId }, actor) {
     // Checked before the role/manager validation below, because for a pending
     // re-invite none of those submitted values are used — see
@@ -304,6 +334,16 @@ export async function verifyInvitationToken(rawToken) {
     };
 }
 
+// Input: the raw token from the emailed link, and the password the new user
+// chose. Output: the now-active user plus a signed session — accepting logs
+// them straight in.
+//
+// Throws 401 for a token that is unknown, already used, or past its expiry.
+// One message covers all three deliberately: distinguishing them would tell an
+// attacker holding a guessed token which part they got right.
+//
+// The token is looked up by *hash*, never by the raw value, which is why a
+// database dump cannot be turned into a working invite link.
 export async function acceptInvitation({ token, password }) {
     const tokenHash = hashSecureToken(token);
     const invitation = await findActiveByTokenHash(tokenHash);

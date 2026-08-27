@@ -1,3 +1,11 @@
+// HTTP glue for accounts and the reporting tree: inviting people, listing
+// them, reading one, moving someone to a different manager, activating and
+// deactivating, and the caller's own profile and password.
+//
+// Every authorization decision here is row-level — "may this actor act on
+// *this* person" — so it lives in userService, not in this file and not in a
+// route gate. A role gate can only answer "is this an HR admin", which is
+// never the whole question.
 import * as userService from "../services/userService.js";
 import * as invitationService from "../services/invitationService.js";
 import * as reportingService from "../services/reportingService.js";
@@ -66,6 +74,13 @@ export async function getMyTeamSize(req, res, next) {
     }
 }
 
+// GET /api/users/:id — the caller themselves, their manager, an in-scope HR
+// admin, or SUPER_ADMIN. 404 for anyone else.
+//
+// `req.user` is passed through because the service decides which fields come
+// back, not just whether the read is allowed: salary and government-ID fields
+// are omitted for a viewer who shouldn't see them, rather than masked, so they
+// never enter the response at all.
 export async function getUserById(req, res, next) {
     try {
         const user = await userService.getUserById(req.params.id, req.user);

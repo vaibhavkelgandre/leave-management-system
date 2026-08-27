@@ -6,6 +6,11 @@ import * as leaveRequestService from "../services/leaveRequestService.js";
 import { sendSuccess } from "../utils/apiResponse.js";
 import { toCsv } from "../utils/csv.js";
 
+// POST /api/leave-requests/preview — any authenticated role.
+// Answers "how many working days would this cost?" with weekends and public
+// holidays already excluded, and writes nothing. Deliberately the same code
+// path the real submit uses, so the number an employee is shown before
+// submitting is always exactly what gets charged (Module 3, point 3).
 export async function preview(req, res, next) {
     try {
         const workingDays = await leaveRequestService.previewWorkingDays(req.body);
@@ -15,6 +20,13 @@ export async function preview(req, res, next) {
     }
 }
 
+// POST /api/leave-requests — any authenticated role, for themselves only.
+// Accepts multipart/form-data so an optional `document` field can ride along.
+// Returns 201 with the created request. Refused by the service for an
+// inactive leave type, a zero-working-day range, an overlap with an existing
+// pending/approved request, a balance the type won't let go negative, a
+// missing document where the type requires one, or leave starting after the
+// employee's last working day.
 export async function submit(req, res, next) {
     try {
         // employee_id always comes from the authenticated session, never the
@@ -28,6 +40,8 @@ export async function submit(req, res, next) {
     }
 }
 
+// GET /api/leave-requests/mine — the caller's own requests, every status,
+// newest first. Needs no scope check: the employee id comes from the session.
 export async function listMine(req, res, next) {
     try {
         const requests = await leaveRequestService.listMyLeaveRequests(req.user.id);
@@ -61,6 +75,10 @@ export async function pendingCount(req, res, next) {
     }
 }
 
+// GET /api/leave-requests/on-leave-today — who in the caller's team is on
+// approved leave today, for the dashboard tile. Unpaginated on purpose: the
+// result is bounded by team size and by a single day.
+// Scoped server-side, so an employee with no team gets [] rather than a 403.
 export async function onLeaveToday(req, res, next) {
     try {
         const requests = await leaveRequestService.listOnLeaveToday(req.user);
@@ -70,6 +88,10 @@ export async function onLeaveToday(req, res, next) {
     }
 }
 
+// GET /api/leave-requests/all — SUPER_ADMIN only (enforced on the route).
+// The company-wide list, and the one read HR_ADMIN is deliberately refused:
+// an HR admin's view of leave is their own branch, via /team. Takes either a
+// page or a date window, never neither — see the query schema.
 export async function listAll(req, res, next) {
     try {
         const { rows, total } = await leaveRequestService.listAllLeaveRequests(req.query);
@@ -113,6 +135,12 @@ const REPORT_CSV_COLUMNS = [
     { key: "total_days_taken", header: "Total Days Taken" },
 ];
 
+// GET /api/leave-requests/report/csv — HR-tier. The same aggregation as
+// /report, delivered as a file.
+//
+// CSV formatting lives here rather than in the service, which only ever
+// returns structured rows — the same layering the document-download endpoint
+// uses. Keeps the service reusable by a caller that wants the data, not a file.
 export async function downloadReportCsv(req, res, next) {
     try {
         const rows = await leaveRequestService.generateLeaveTakenReport(req.user, req.query);
@@ -129,6 +157,11 @@ export async function downloadReportCsv(req, res, next) {
     }
 }
 
+// GET /api/leave-requests/:id — the requester, their approver (or an active
+// delegate), an in-branch HR admin, or SUPER_ADMIN.
+// 404 for anyone else, deliberately not 403: someone with no legitimate
+// reason to know the record exists learns nothing from the answer (NFR-5).
+// This one rule backs the audit-trail and document endpoints below too.
 export async function getOne(req, res, next) {
     try {
         const request = await leaveRequestService.getLeaveRequestById(req.user, req.params.id);
@@ -138,6 +171,9 @@ export async function getOne(req, res, next) {
     }
 }
 
+// GET /api/leave-requests/:id/audit — every state change with its actor,
+// timestamp and comment, append-only and never edited (Module 3, point 10).
+// Reuses getOne's viewing rule, so visibility can't drift between the two.
 export async function getAuditTrail(req, res, next) {
     try {
         const trail = await leaveRequestService.getAuditTrail(req.user, req.params.id);
@@ -147,6 +183,11 @@ export async function getAuditTrail(req, res, next) {
     }
 }
 
+// GET /api/leave-requests/:id/document — metadata plus a freshly minted
+// signed URL, good for five minutes. Same viewing rule as getOne.
+//
+// Generated per call and never cached, so there is no long-lived link to
+// leak: Postgres stores only the Cloudinary public id, never a URL.
 export async function getDocument(req, res, next) {
     try {
         const document = await leaveRequestService.getLeaveRequestDocument(req.user, req.params.id);
@@ -195,11 +236,25 @@ function makeDecisionHandler(action) {
     };
 }
 
+// POST /api/leave-requests/:id/{approve,reject,withdraw,cancel}. Which roles
+// may call which is a row-level question, so it is answered in the service
+// (resolveActingCapacity), not by a route gate: approve/reject need the
+// employee's own manager or an active delegate; withdraw and cancel are the
+// employee's alone. An illegal transition is 409, an unauthorized caller 404,
+// and a decision against a period that already has a payslip is 409 too.
 export const approve = makeDecisionHandler("APPROVE");
 export const reject = makeDecisionHandler("REJECT");
 export const withdraw = makeDecisionHandler("WITHDRAW");
 export const cancel = makeDecisionHandler("CANCEL");
 
+// POST /api/leave-requests/:id/override — HR_ADMIN only, and only within
+// their own branch. SUPER_ADMIN can never override; that asymmetry is
+// deliberate (see docs/7.role_permissions_matrix.md).
+//
+// Maps the requested target status onto one of the two HR_OVERRIDE_* actions,
+// which the state machine only permits from an already-decided request — so
+// "the manager decides first, HR revisits after" is enforced by the
+// transition map rather than by a check here. The comment is required.
 export async function override(req, res, next) {
     try {
         const action = req.body.toStatus === "APPROVED" ? "HR_OVERRIDE_TO_APPROVED" : "HR_OVERRIDE_TO_REJECTED";

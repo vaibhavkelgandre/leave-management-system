@@ -1,6 +1,14 @@
+// HTTP glue for leave types. One genuine decision lives here rather than in
+// the service: whether the caller is allowed to see deactivated types at all
+// (getLeaveTypes below). Everything else is pass-through.
 import * as leaveTypeService from "../services/leaveTypeService.js";
 import { sendSuccess } from "../utils/apiResponse.js";
 
+// POST /api/leave-types — HR-tier. 201 with the created type, 409 on a
+// duplicate name (compared case-insensitively).
+//
+// The service backfills a balance row for every active employee, so this is a
+// company-wide write despite looking like a single insert.
 export async function createLeaveType(req, res, next) {
     try {
         const leaveType = await leaveTypeService.createLeaveType(req.body);
@@ -23,6 +31,7 @@ export async function getLeaveTypes(req, res, next) {
     }
 }
 
+// GET /api/leave-types/:id — any authenticated role. 404 if it doesn't exist.
 export async function getLeaveTypeById(req, res, next) {
     try {
         const leaveType = await leaveTypeService.getLeaveTypeById(req.params.id);
@@ -32,6 +41,14 @@ export async function getLeaveTypeById(req, res, next) {
     }
 }
 
+// PATCH /api/leave-types/:id — HR-tier. Returns `{ leaveType, balancesUpdated }`.
+//
+// `balancesUpdated` is 0 unless the body opts in with `applyToCurrentYear`:
+// entitlement is snapshotted onto each balance row when it is created, so an
+// edit changes nothing for existing employees by default. That default is
+// deliberate — rewriting an entitlement changes a number people have already
+// been shown — but it used to be invisible, which is why the count is
+// reported rather than merely applied.
 export async function updateLeaveType(req, res, next) {
     try {
         const { leaveType, balancesUpdated } = await leaveTypeService.updateLeaveType(req.params.id, req.body);
@@ -45,6 +62,12 @@ export async function updateLeaveType(req, res, next) {
     }
 }
 
+// PATCH /api/leave-types/:id/status — HR-tier. Returns
+// `{ leaveType, pendingRequests }`.
+//
+// Deactivating blocks *new* requests but not decisions on existing ones, so
+// the count says how many are still awaiting one. Without it the type
+// disappears from the picker while approvals on it keep arriving.
 export async function updateLeaveTypeStatus(req, res, next) {
     try {
         const { leaveType, pendingRequests } = await leaveTypeService.setLeaveTypeStatus(

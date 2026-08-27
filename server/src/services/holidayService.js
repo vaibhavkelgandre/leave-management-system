@@ -1,3 +1,9 @@
+// The public-holiday calendar (FR-010), and the recount every write triggers.
+//
+// Holidays are stored as a date *range*, not a single date, so a multi-day
+// holiday is one row. There is no database-level uniqueness on those dates —
+// ranges make exact-duplicate uniqueness meaningless — so overlap is checked
+// here instead and answered with a 409, the same status the old constraint gave.
 import {
     insertHoliday,
     findAllHolidays,
@@ -23,6 +29,14 @@ import { conflict, notFound } from "../utils/appError.js";
 // A moved holiday reconciles the union of its old and new ranges, because both
 // sets of dates changed meaning.
 
+// Input: `{ name, startDate, endDate? }` and the acting HR user's id.
+// Output: `{ holiday, adjusted }` — `adjusted` naming every live request whose
+// day count changed. Throws 409 when the range overlaps an existing holiday.
+//
+// `endDate` is optional and defaults to `startDate`, which is what makes a
+// single-day holiday the easy case for callers while the storage stays a range.
+// `actorId` is needed only because the recount notifies affected employees and
+// may void payslips — attributing that to a person is the point.
 export async function createHoliday({ name, startDate, endDate }, actorId) {
     const resolvedEndDate = endDate || startDate;
 
@@ -35,10 +49,16 @@ export async function createHoliday({ name, startDate, endDate }, actorId) {
     return { holiday, adjusted };
 }
 
+// Input: an optional year. Output: the matching holidays.
+//
+// Open to every role, deliberately: the working-day count is meaningless
+// without the calendar behind it, so anyone who can request leave can read it.
 export async function listHolidays(year) {
     return findAllHolidays({ year });
 }
 
+// Input: a holiday id. Output: the row. Throws 404 if it doesn't exist.
+// Used as the existence guard by update and delete below.
 export async function getHolidayById(id) {
     const holiday = await findHolidayById(id);
     if (!holiday) {
@@ -47,6 +67,10 @@ export async function getHolidayById(id) {
     return holiday;
 }
 
+// Input: the id, the full new definition, and the actor's id. Output:
+// `{ holiday, adjusted }`. Throws 404 if it doesn't exist, 409 on overlap with
+// a *different* holiday (its own row is excluded from that check, or every
+// edit would collide with itself).
 export async function updateHoliday(id, { name, startDate, endDate }, actorId) {
     const existing = await getHolidayById(id);
     const resolvedEndDate = endDate || startDate;
@@ -68,6 +92,14 @@ export async function updateHoliday(id, { name, startDate, endDate }, actorId) {
     return { holiday: updated, adjusted };
 }
 
+// Input: the id and the actor's id. Output: `{ adjusted }` — there is no
+// holiday left to return. Throws 404 if it doesn't exist.
+//
+// Recounts in the opposite direction to create: a date that was excluded from
+// a live request becomes a working day again, so the employee is charged it
+// back. Deleting a holiday declared by mistake is exactly the case this
+// exists for, and without the recount it would leave them permanently
+// under-charged.
 export async function deleteHoliday(id, actorId) {
     // Read before deleting: the dates are needed to know which requests to
     // recount, and they're gone once the row is.

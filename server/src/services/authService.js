@@ -1,3 +1,13 @@
+// Every way a session legitimately begins: the one-time bootstrap of the
+// deployment's SUPER_ADMIN, email/password login, and Google sign-in.
+//
+// Two rules hold across the whole file. There is **no public registration** —
+// every other account is created by invitation, and Google is a login method
+// for an account that already exists, never a signup path, so an unrecognised
+// Google email is refused rather than auto-registered. And the token these
+// functions sign carries only a subject and a role *hint*: the role is re-read
+// from the database on every request (authMiddleware), so a tampered claim
+// grants nothing.
 import crypto from "node:crypto";
 import {
     findAuthByEmail,

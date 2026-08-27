@@ -299,6 +299,13 @@ export async function reconcileWorkingDaysForHolidayChange(actorId, startDate, e
     return { adjusted };
 }
 
+// Input: a date range and the two half-day flags. Output: the number of working
+// days it consumes, with weekends and public holidays excluded.
+//
+// Pure and side-effect-free, and called by `submitLeaveRequest` itself rather
+// than duplicated there — which is the whole point. The figure an employee is
+// shown before submitting is computed by the same code that charges them, so
+// the two cannot disagree (Module 3, point 3).
 export async function previewWorkingDays({ startDate, endDate, startHalfDay, endHalfDay }) {
     const holidays = await findAllHolidays({});
     return calculateWorkingDays({ startDate, endDate, startHalfDay, endHalfDay, holidays });
@@ -791,6 +798,28 @@ async function assertPeriodsOpen(request, action) {
     }
 }
 
+// The single choke point for every status change a leave request can undergo:
+// approve, reject, withdraw, cancel, and both HR overrides.
+//
+// Input: the acting user, the request id, one action string, and an optional
+// comment (required for an override). Output: the updated request.
+//
+// Failure modes, and the order they are checked in — which is itself a
+// decision:
+//   404  the request doesn't exist, or the actor has no business knowing it
+//        does. Authorization is resolved first, so an outsider learns nothing
+//        about the request's state from a later error.
+//   403  the actor may see it but not take this action (an in-branch HR admin
+//        attempting a direct approve, which is the manager's alone).
+//   409  the transition is illegal for the current status, per the state map.
+//   409  the request overlaps a period for which a payslip has already been
+//        issued. Checked last because it is the least fundamental complaint,
+//        and a manager hitting it has never heard of a payroll run — so the
+//        message names the period and says HR must void the payslip.
+//
+// Every legal move lives in one transition map rather than in scattered
+// conditionals, and the balance always moves by *appending* a ledger entry,
+// never by editing an earlier one.
 export async function decideLeaveRequest(actor, requestId, action, comment) {
     const request = await findLeaveRequestById(requestId);
     if (!request) {

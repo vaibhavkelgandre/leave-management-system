@@ -12,6 +12,10 @@ function withAdjustments(base, adjusted) {
     return `${base} ${adjusted.length} leave request(s) recounted.`;
 }
 
+// POST /api/holidays — HR_ADMIN or SUPER_ADMIN.
+// 201 with `{ holiday, adjusted }`. 409 when the range overlaps an existing
+// holiday (checked in the service, since ranges make DB-level uniqueness
+// meaningless). `adjusted` lists every live request whose day count changed.
 export async function createHoliday(req, res, next) {
     try {
         const { holiday, adjusted } = await holidayService.createHoliday(req.body, req.user.id);
@@ -21,6 +25,9 @@ export async function createHoliday(req, res, next) {
     }
 }
 
+// GET /api/holidays — any authenticated role; everyone needs the calendar to
+// read a working-day count. Optional `year` narrows it; unpaginated because a
+// year of holidays is inherently small.
 export async function getHolidays(req, res, next) {
     try {
         const holidays = await holidayService.listHolidays(req.query.year);
@@ -30,6 +37,11 @@ export async function getHolidays(req, res, next) {
     }
 }
 
+// PATCH /api/holidays/:id — HR-tier. 404 if it doesn't exist, 409 on overlap.
+//
+// Moving a holiday reconciles the union of the old and new ranges, because
+// both sets of dates changed meaning: the new ones became holidays and the old
+// ones stopped being holidays, and only recounting both catches the second.
 export async function updateHoliday(req, res, next) {
     try {
         const { holiday, adjusted } = await holidayService.updateHoliday(req.params.id, req.body, req.user.id);
@@ -39,6 +51,12 @@ export async function updateHoliday(req, res, next) {
     }
 }
 
+// DELETE /api/holidays/:id — HR-tier. Returns `{ adjusted }` only; there is no
+// holiday left to return.
+//
+// Recounts in the opposite direction: a day that was excluded from a live
+// request now counts again, so employees are charged the day back. Deleting a
+// holiday declared in error is exactly the case this exists for.
 export async function deleteHoliday(req, res, next) {
     try {
         const { adjusted } = await holidayService.deleteHoliday(req.params.id, req.user.id);

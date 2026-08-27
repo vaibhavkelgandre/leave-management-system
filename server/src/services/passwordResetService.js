@@ -1,3 +1,15 @@
+// Forgotten-password flow: issue a single-use link, then consume it.
+//
+// The whole file is shaped by one guarantee — **the response must not reveal
+// whether an email belongs to a real account**. That is why the send is
+// fire-and-forget rather than awaited (an SMTP handshake takes ~1-3s for a real
+// address and milliseconds for an unknown one, which is a timing oracle), why a
+// delivery failure must never become a 5xx, and why the resend cooldown returns
+// silently instead of a 429. All three are security decisions that read like
+// sloppy error handling; none of them may be "tidied up".
+//
+// Tokens are stored only as SHA-256 hashes, so a database dump yields nothing
+// usable, and the raw token is deliberately kept out of every log line.
 import { findAuthByEmail, updatePasswordHash } from "../repositories/userRepository.js";
 import {
     issuePasswordReset,

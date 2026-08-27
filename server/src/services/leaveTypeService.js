@@ -1,3 +1,9 @@
+// Leave types and their lifecycle (FR-007).
+//
+// A leave type is global: creating one touches every active employee, and
+// changing one can change numbers people have already been shown. Both of the
+// mutating functions below therefore return a *count* alongside the row, so
+// the caller can tell HR what actually happened rather than just "saved".
 import {
     insertLeaveType,
     findAllLeaveTypes,
@@ -9,6 +15,9 @@ import { countSubmittedRequestsForLeaveType } from "../repositories/leaveRequest
 import * as leaveBalanceService from "./leaveBalanceService.js";
 import { notFound } from "../utils/appError.js";
 
+// Input: a validated leave-type definition. Output: the created row.
+// Throws 409 (via the repository's unique constraint on lower(name)) for a
+// duplicate name.
 export async function createLeaveType(payload) {
     const leaveType = await insertLeaveType(payload);
     // Extend the new leave type to every existing active employee right away
@@ -17,10 +26,17 @@ export async function createLeaveType(payload) {
     return leaveType;
 }
 
+// Input: whether to include deactivated types — a decision the controller
+// makes from the caller's role, not this function. Output: every matching
+// type. Unpaginated: the list is bounded by how many types an org defines.
 export async function listLeaveTypes(includeInactive) {
     return findAllLeaveTypes({ includeInactive });
 }
 
+// Input: a leave type id. Output: the row. Throws 404 if it doesn't exist.
+//
+// Used as a guard by both mutating functions below, so "does it exist" is
+// answered once and in one place.
 export async function getLeaveTypeById(id) {
     const leaveType = await findLeaveTypeById(id);
     if (!leaveType) {

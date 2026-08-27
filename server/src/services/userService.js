@@ -1,3 +1,18 @@
+// Accounts and the reporting tree: who exists, who they report to, whether
+// they are active, what their profile says, and which of those fields a given
+// viewer is allowed to see.
+//
+// Two things run through the whole file. **Every authorization decision here
+// is row-level** — "may this actor act on *this* person" — because a role gate
+// can only answer "is this an HR admin", which is never the whole question;
+// the scope helpers (isInActorsHrScope, isUserInSubtree) are how that gets
+// answered, and an out-of-scope target is a 404 rather than a 403 so nobody
+// learns a record exists that they have no reason to know about.
+//
+// And **sensitive fields are omitted, not masked**: salary and government-ID
+// columns are removed from the object before it leaves this layer, so they
+// never reach a response body at all. A masked field is still a field that
+// travelled.
 import {
     deleteExpiredInvitees,
     findAllUsers,
@@ -89,6 +104,13 @@ export function maskSensitiveProfileFieldsForList(users, viewer) {
     return users.map((user) => maskSensitiveProfileFields(user, viewer));
 }
 
+// Input: the acting user. Output: the users they may see, with sensitive
+// profile fields already stripped for that viewer.
+//
+// Scope is by role: HR-tier sees the whole company (they need it to know who
+// reports to whom before inviting into the tree), everyone else sees their own
+// subtree. That company-wide *read* is deliberate and separate from the write
+// actions below, which are all scoped much more tightly.
 export async function listUsersFor(actor) {
     // Swept here rather than on a schedule: the project has no job runner, and
     // listing users is the moment the stale rows would otherwise be seen. Same
@@ -296,6 +318,21 @@ export async function processEmployeeExit(actor, employeeId, { lastWorkingDay, r
     return { employee: updated, voided };
 }
 
+// Input: the acting HR user, the employee, and either or both employment dates.
+// Output: `{ employee, voided }` — `voided` naming payslips that no longer
+// agree with the new dates. Throws 403 for a non-HR actor, 404 out of scope,
+// 400 if the leaving date precedes the joining date.
+//
+// **HR-only, and that is a security boundary rather than a convention.** Both
+// dates were once self-editable profile fields while `joining_date` already
+// drove the payable-day count, so an employee could move their own start date
+// earlier and be paid for weeks they had not worked. The value payroll trusts
+// must never be supplied by the person being paid; it comes from the signed
+// offer letter, at verification time.
+//
+// Affected payslips are voided rather than recomputed: silently changing a
+// figure someone has already read is how a person discovers a pay cut by
+// re-opening an old document.
 export async function updateEmploymentDates(actor, employeeId, { joiningDate, lastWorkingDay }) {
     if (actor.role !== "HR_ADMIN" && actor.role !== "SUPER_ADMIN") {
         throw forbidden("Only HR can set employment dates");
@@ -340,6 +377,16 @@ export async function updateEmploymentDates(actor, employeeId, { joiningDate, la
     return { employee: updated, voided };
 }
 
+// Input: the acting HR user and the employee. Output: the updated user.
+// Throws 403 for a non-HR actor, 404 out of scope, 409 if the profile isn't
+// awaiting verification, and 400 if any required document is unreviewed or
+// rejected.
+//
+// The document gate is what keeps the per-document review step from being
+// decorative — without it HR could mark a profile verified while its documents
+// sat unread. The two failure modes answer different codes on purpose: a
+// document still pending review is HR's own next action (400), while "already
+// verified" is a state conflict (409).
 export async function verifyProfile(actor, employeeId) {
     if (actor.role !== "HR_ADMIN" && actor.role !== "SUPER_ADMIN") {
         throw forbidden("Only HR can verify a profile");

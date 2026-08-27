@@ -1,3 +1,10 @@
+// HTTP glue for every way a session can begin or end: the one-time bootstrap,
+// password and Google login, logout, accepting an invite, and password reset.
+//
+// The one thing worth knowing about this file is what it does *not* return.
+// The JWT never reaches the response body — setAuthCookie puts it in an
+// httpOnly cookie, so client JavaScript can never read it, which is what makes
+// an XSS bug unable to steal a session. Callers get the user object only.
 import * as authService from "../services/authService.js";
 import * as invitationService from "../services/invitationService.js";
 import * as passwordResetService from "../services/passwordResetService.js";
@@ -21,6 +28,12 @@ export async function getBootstrapStatus(req, res, next) {
     }
 }
 
+// POST /api/auth/register/hr — public, gated by HR_REGISTRATION_CODE.
+//
+// Creates the single SUPER_ADMIN that owns this deployment and signs them in
+// on the same response. 401 for a wrong code, 409 once one exists, 400 if the
+// role row is missing (an unmigrated database). The name is historical: this
+// endpoint used to create unlimited root HR admins.
 export async function registerHrAdmin(req, res, next) {
     try {
         const { token, user } = await authService.registerHrRoot(req.body);

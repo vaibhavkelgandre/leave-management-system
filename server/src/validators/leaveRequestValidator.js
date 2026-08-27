@@ -34,6 +34,9 @@ function refineDateRange(data, ctx) {
     }
 }
 
+// Body for the side-effect-free working-day preview. No leaveTypeId: the count
+// depends only on the dates, the half-day flags, weekends and holidays — so
+// asking for a preview costs the caller nothing they haven't decided yet.
 export const previewLeaveRequestSchema = z
     .object({
         startDate: dateStringSchema,
@@ -43,6 +46,13 @@ export const previewLeaveRequestSchema = z
     })
     .superRefine(refineDateRange);
 
+// Body for a real submission. Same date fields as the preview plus the leave
+// type and reason.
+//
+// The half-day flags use `booleanish` rather than z.boolean() because this
+// route accepts multipart/form-data (an optional document rides along), and
+// every multipart field arrives as a string — a plain boolean() would reject
+// the literal "false".
 export const submitLeaveRequestSchema = z
     .object({
         leaveTypeId: z.string().uuid("leaveTypeId must be a valid id"),
@@ -54,6 +64,9 @@ export const submitLeaveRequestSchema = z
     })
     .superRefine(refineDateRange);
 
+// The `:id` path parameter, shared by every per-request route. UUID-checked
+// here so a malformed id is a 422 rather than a Postgres 22P02 surfacing as a
+// 500.
 export const leaveRequestIdParamSchema = z.object({
     id: z.string().uuid("id must be a valid id"),
 });

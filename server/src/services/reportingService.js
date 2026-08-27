@@ -1,3 +1,13 @@
+// The reporting tree: who may report to whom, and the walks that answer "is
+// this person in my team?".
+//
+// ALLOWED_MANAGER_ROLES below is the single server-side definition of
+// reporting-line eligibility. Three places in the client hold their own copy of
+// it for form filtering, so changing it here means changing those too — or the
+// UI offers a reporting line the server will refuse.
+//
+// The subtree walks are recursive CTEs in the repository, and they are what
+// every row-level authorization check in the app ultimately rests on.
 import {
     findSubtreeUsers,
     countSubtreeUsers,
