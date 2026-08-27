@@ -110,6 +110,17 @@ describe("getNotificationRoute", () => {
         });
     });
 
+    // One type, two recipients (the delegate and the nominating manager), and
+    // neither has a page that shows this — so both land on the dashboard, where
+    // DelegateStatus/DelegationStatus surface the coverage for whichever side is
+    // viewing. Routing the delegate to /dashboard/delegations would 403 them.
+    it("sends a delegation/leave clash to the dashboard for both sides", () => {
+        expect(getNotificationRoute({ type: "DELEGATION_LEAVE_CONFLICT", entity_id: "del-2" })).toEqual({
+            pathname: "/dashboard",
+            state: null,
+        });
+    });
+
     it("sends an accepted invite to My Team — All Employees is SUPER_ADMIN-only now", () => {
         expect(getNotificationRoute({ type: "INVITE_ACCEPTED", entity_id: "emp-1" })).toEqual({
             pathname: "/dashboard/team",

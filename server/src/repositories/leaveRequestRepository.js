@@ -4,7 +4,7 @@
 import pool from "../config/db.js";
 
 const BASE_COLUMNS = `id, employee_id, leave_type_id, start_date, end_date, start_half_day, end_half_day,
-    working_days, reason, status, decided_by, decided_at, decision_comment, created_at, updated_at`;
+    working_days, reason, status, hr_escalated, decided_by, decided_at, decision_comment, created_at, updated_at`;
 
 // Joined shape used by every "read" query — includes the leave type's name,
 // the employee's name/manager_id (so callers, the service's authorization
@@ -29,7 +29,7 @@ const BASE_COLUMNS = `id, employee_id, leave_type_id, start_date, end_date, star
 const JOINED_COLUMNS = `
     lr.id, lr.employee_id, lr.leave_type_id, lt.name AS leave_type_name,
     lr.start_date, lr.end_date, lr.start_half_day, lr.end_half_day, lr.working_days,
-    lr.reason, lr.status, lr.decided_by, lr.decided_at, lr.decision_comment,
+    lr.reason, lr.status, lr.hr_escalated, lr.decided_by, lr.decided_at, lr.decision_comment,
     lr.created_at, lr.updated_at,
     u.first_name AS employee_first_name, u.last_name AS employee_last_name, u.email AS employee_email, u.manager_id AS employee_manager_id,
     employee_role.role_name AS employee_role,
@@ -49,6 +49,10 @@ const JOINED_FROM = `FROM leave_requests lr
 // the leave type name/employee details from validating the submission).
 // Always created as SUBMITTED; no failure mode beyond a DB constraint (e.g. a
 // bad FK) surfacing as a generic error.
+// `hrEscalated` marks a request whose submitter was standing in as their own
+// manager's delegate at the time, so HR decides it instead of that manager
+// (leaveRequestService.resolveEscalationForSubmission) — false for every
+// ordinary submission.
 // `status`/`decidedBy`/`decidedAt` default to a plain SUBMITTED row (the
 // normal path — the DB column default would do this anyway, but passing it
 // explicitly keeps every column visible in one place); SUPER_ADMIN's
@@ -65,15 +69,16 @@ export async function insertLeaveRequest({
     workingDays,
     reason,
     status = "SUBMITTED",
+    hrEscalated = false,
     decidedBy = null,
     decidedAt = null,
 }) {
     const result = await pool.query(
         `INSERT INTO leave_requests
-            (employee_id, leave_type_id, start_date, end_date, start_half_day, end_half_day, working_days, reason, status, decided_by, decided_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            (employee_id, leave_type_id, start_date, end_date, start_half_day, end_half_day, working_days, reason, status, hr_escalated, decided_by, decided_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
          RETURNING ${BASE_COLUMNS}`,
-        [employeeId, leaveTypeId, startDate, endDate, startHalfDay, endHalfDay, workingDays, reason, status, decidedBy, decidedAt]
+        [employeeId, leaveTypeId, startDate, endDate, startHalfDay, endHalfDay, workingDays, reason, status, hrEscalated, decidedBy, decidedAt]
     );
     return result.rows[0];
 }
@@ -188,16 +193,26 @@ export async function countTeamLeaveRequests(filters = {}) {
 // someone I'm standing in for)" — see resolveActingCapacity. That also keeps
 // the parameter list short: one array of manager ids instead of a subtree's
 // worth of employee ids.
-export async function countPendingDecisionsForManagers(managerIds) {
-    if (managerIds.length === 0) {
+//
+// `escalatedEmployeeIds` is the second, narrower half of the same question, and
+// it *has* to be employee-keyed rather than manager-keyed: an escalated request
+// is precisely one whose assigned manager is not the person who should decide it
+// (see leaveRequestService.resolveEscalationForSubmission), so no manager id
+// identifies it. Passing an HR-tier caller's own scope here counts the requests
+// that were routed past a manager to them. A single query with an OR rather than
+// two summed counts, because an escalated request whose manager happens to be
+// the caller as well would otherwise be counted twice.
+export async function countPendingDecisionsForManagers(managerIds, escalatedEmployeeIds = []) {
+    if (managerIds.length === 0 && escalatedEmployeeIds.length === 0) {
         return 0;
     }
     const result = await pool.query(
         `SELECT COUNT(*)::int AS count
          FROM leave_requests lr
          JOIN users u ON u.id = lr.employee_id
-         WHERE lr.status = 'SUBMITTED' AND u.manager_id = ANY($1::uuid[])`,
-        [managerIds]
+         WHERE lr.status = 'SUBMITTED'
+           AND (u.manager_id = ANY($1::uuid[]) OR (lr.hr_escalated AND lr.employee_id = ANY($2::uuid[])))`,
+        [managerIds, escalatedEmployeeIds]
     );
     return result.rows[0].count;
 }
@@ -350,9 +365,14 @@ export async function findLeaveTakenReport({ startDate, endDate, employeeIds }) 
 // used for holidays) and the other request hasn't already been
 // rejected/withdrawn/cancelled — only SUBMITTED/APPROVED requests hold a
 // claim on the calendar.
+//
+// Returns the offending row's dates and status alongside its id, not just a
+// truthy marker: delegationService.createDelegation refuses a nomination whose
+// window collides with the candidate's own leave, and a refusal that cannot say
+// *which* dates collide leaves the manager guessing at their next attempt.
 export async function findOverlappingLeaveRequest({ employeeId, startDate, endDate }) {
     const result = await pool.query(
-        `SELECT id FROM leave_requests
+        `SELECT id, start_date, end_date, status FROM leave_requests
          WHERE employee_id = $1
            AND status IN ('SUBMITTED', 'APPROVED')
            AND start_date <= $3 AND end_date >= $2

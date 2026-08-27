@@ -10,5 +10,11 @@
 // direct-report HR_ADMINs only — see hrScopeService.js on the server).
 export function canDecideDirectly(request, viewer) {
     if (!viewer || (viewer.role !== "HR_ADMIN" && viewer.role !== "SUPER_ADMIN")) return true;
+    // An escalated request was submitted while the employee was covering
+    // approvals for their own manager, so that manager is away and HR takes the
+    // first decision instead of waiting for one (resolveActingCapacity's
+    // hr_escalated branch). The list this renders from is already scope-filtered
+    // server-side, so the flag alone is the whole client-side question.
+    if (request.hr_escalated) return true;
     return request.employee_manager_id === viewer.id;
 }

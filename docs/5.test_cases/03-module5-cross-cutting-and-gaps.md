@@ -268,6 +268,10 @@ These don't belong to a single module — they're about the *kind* of testing th
 - `inspect` separates pending / edited / orphaned without changing anything
 - The real `src/sql` directory has unique, zero-padded, three-digit prefixes
 
+**Server — `notificationTypeConstraint.test.js`** (the `notifications.type` CHECK list)
+- Every `type: "X"` literal in `notificationService.js` is accepted by the live constraint — the types are read out of the source, never kept as a second hand-maintained list, and the extracted list is asserted non-trivially long so a regex that stops matching fails instead of passing vacuously
+- Exists because a CHECK list has no `ADD VALUE`: each migration re-declares the whole list, so copying an older ancestor's version silently deletes every type added since. Hit for real (`044` was written from `041`'s list and dropped `LEAVE_DAYS_ADJUSTED`, added by `042`), and invisible without a test — every `notify*` helper swallows and logs its own error, so the triggering action still answers `200` while the notification quietly stops existing
+
 ---
 
 ### Suggested Testing Order

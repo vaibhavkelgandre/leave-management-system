@@ -101,9 +101,21 @@ async function resolveManagerOrNearestHrAncestor(employeeId) {
 // their profile-submitted notification to reach *someone* — without this,
 // the chain search would find nothing and this would silently return null.
 // Returns null in the defensive case where the chain has neither role at all.
-async function resolveNearestHrAncestor(employeeId) {
+//
+// `excludeId` skips one specific person on the way up, and exists for exactly
+// one case: an escalated leave request must reach an HR admin *other than* the
+// manager it was escalated past. When an employee reports straight to HR, that
+// away manager is themselves the nearest HR ancestor, so without this the
+// escalation would be delivered to the person who is unavailable — the opposite
+// of what it is for.
+async function resolveNearestHrAncestor(employeeId, { excludeId = null } = {}) {
     const chain = await findReportingLine(employeeId);
-    return chain.find((person) => person.role === "HR_ADMIN" || person.role === "SUPER_ADMIN")?.id ?? null;
+    return (
+        chain.find(
+            (person) =>
+                person.id !== excludeId && (person.role === "HR_ADMIN" || person.role === "SUPER_ADMIN")
+        )?.id ?? null
+    );
 }
 
 // -----------------------------------------------------------------------
@@ -133,6 +145,91 @@ export async function notifyLeaveRequestSubmitted(request) {
         });
     } catch (error) {
         console.error("Failed to create LEAVE_REQUEST_SUBMITTED notification:", error.message);
+    }
+}
+
+// Input: the newly submitted leave request (same joined shape as
+// notifyLeaveRequestSubmitted) and the id of the manager it was escalated past.
+// Notifies the nearest HR-tier ancestor *above* that manager — never the
+// manager themselves, who is away covering-wise and is the reason this was
+// escalated at all.
+//
+// Called instead of notifyLeaveRequestSubmitted, not alongside it: this request
+// is HR's to decide (leaveRequestService.resolveActingCapacity), and telling the
+// away manager as well would ask two people for one decision. The manager still
+// sees it in their own approvals list when they return, and can still decide it
+// if HR has not.
+//
+// Reuses the LEAVE_REQUEST_SUBMITTED type deliberately rather than adding a new
+// one — the recipient's action is identical (go to Approvals and decide it), and
+// notificationRouting.js already sends that type there. Only the wording
+// differs, because *why* it landed with HR is the part that needs explaining.
+export async function notifyLeaveRequestEscalatedToHr(request, awayManagerId) {
+    try {
+        const recipientId = await resolveNearestHrAncestor(request.employee_id, { excludeId: awayManagerId });
+        if (!recipientId) return;
+
+        const employeeName = `${request.employee_first_name} ${request.employee_last_name}`;
+        const managerName = request.manager_first_name
+            ? `${request.manager_first_name} ${request.manager_last_name}`
+            : "their manager";
+
+        await insertNotification({
+            recipientId,
+            actorId: request.employee_id,
+            type: "LEAVE_REQUEST_SUBMITTED",
+            entityType: "LEAVE_REQUEST",
+            entityId: request.id,
+            message: `${employeeName} submitted a ${request.leave_type_name} request while covering approvals for ${managerName}, so it needs your decision`,
+        });
+    } catch (error) {
+        console.error("Failed to create escalated LEAVE_REQUEST_SUBMITTED notification:", error.message);
+    }
+}
+
+// Input: a delegation row whose window starts in the future (joined against the
+// manager's name, from delegationRepository.findDelegationsForDelegateOverlapping)
+// and the leave request that was just submitted over it.
+//
+// Notifies **both** sides, with different wording, following the
+// MANAGER_REASSIGNED/TEAM_MEMBER_ASSIGNED precedent for one event that two
+// people need to hear about differently:
+//   - the delegate, because they may not remember being nominated, and the
+//     resolution is theirs to start — there is no accept/reject flow, so
+//     "contact your manager" is literally the only route available to them;
+//   - the nominating manager, because they are about to have no cover and would
+//     otherwise only find out if the employee remembers to tell them. The
+//     mirror-image clash (nominating someone whose leave is already booked) is
+//     refused outright in delegationService, so leaving the manager uninformed
+//     here would close one direction of the same hole and leave the other open.
+export async function notifyDelegationLeaveConflict(delegation, request) {
+    try {
+        const employeeName = `${request.employee_first_name} ${request.employee_last_name}`;
+
+        await insertNotification({
+            recipientId: delegation.delegate_id,
+            actorId: request.employee_id,
+            type: "DELEGATION_LEAVE_CONFLICT",
+            entityType: "DELEGATION",
+            entityId: delegation.id,
+            message:
+                `You are the selected delegate for ${delegation.manager_first_name} ${delegation.manager_last_name} ` +
+                `from ${delegation.start_date} to ${delegation.end_date}, which overlaps this leave. ` +
+                `If you are not available to cover approvals, contact your manager.`,
+        });
+
+        await insertNotification({
+            recipientId: delegation.manager_id,
+            actorId: request.employee_id,
+            type: "DELEGATION_LEAVE_CONFLICT",
+            entityType: "DELEGATION",
+            entityId: delegation.id,
+            message:
+                `${employeeName}, your delegate from ${delegation.start_date} to ${delegation.end_date}, ` +
+                `has requested leave from ${request.start_date} to ${request.end_date}, which overlaps that cover.`,
+        });
+    } catch (error) {
+        console.error("Failed to create DELEGATION_LEAVE_CONFLICT notification:", error.message);
     }
 }
 

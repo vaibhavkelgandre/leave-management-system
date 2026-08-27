@@ -11,7 +11,7 @@ Every route below requires `requireAuth`. `working_days` is computed server-side
 {
   "id": "...", "employee_id": "...", "leave_type_id": "...", "leave_type_name": "Annual Leave",
   "start_date": "2027-01-04", "end_date": "2027-01-05", "start_half_day": false, "end_half_day": false,
-  "working_days": "2.0", "reason": "...", "status": "SUBMITTED",
+  "working_days": "2.0", "reason": "...", "status": "SUBMITTED", "hr_escalated": false,
   "decided_by": null, "decided_at": null, "decision_comment": null,
   "decided_by_first_name": null, "decided_by_last_name": null,
   "employee_first_name": "...", "employee_last_name": "...", "employee_email": "...", "employee_manager_id": "...", "employee_role": "EMPLOYEE",
@@ -20,7 +20,7 @@ Every route below requires `requireAuth`. `working_days` is computed server-side
   "created_at": "...", "updated_at": "..."
 }
 ```
-`decided_by_first_name`/`decided_by_last_name` are resolved server-side from `decided_by` (null until the request is decided) so the UI never has to show a raw user id. `has_document` (FR-012) tells the UI whether to show a "view document" action, without a client needing to call `GET /:id/document` on every row just to find out. `manager_first_name`/`manager_last_name` name the employee's own manager (`employee_manager_id`) — used by `GET /api/leave-requests/team` so the UI can label a row "delegated for X" when it belongs to a manager other than the viewer themself (see that route below). `employee_email` lets a team/approvals view disambiguate same-named employees without a second lookup.
+`decided_by_first_name`/`decided_by_last_name` are resolved server-side from `decided_by` (null until the request is decided) so the UI never has to show a raw user id. `has_document` (FR-012) tells the UI whether to show a "view document" action, without a client needing to call `GET /:id/document` on every row just to find out. `manager_first_name`/`manager_last_name` name the employee's own manager (`employee_manager_id`) — used by `GET /api/leave-requests/team` so the UI can label a row "delegated for X" when it belongs to a manager other than the viewer themself (see that route below). `employee_email` lets a team/approvals view disambiguate same-named employees without a second lookup. `hr_escalated` is true only for a request submitted while the employee was standing in as their own manager's delegate — see the delegation table under `POST /api/leave-requests`; it is what lets the approvals UI badge the row and offer HR the approve/reject buttons the server will actually accept.
 
 **403 vs. 404, applied deliberately across every route below** (NFR-5): if the caller has no legitimate reason to know a request exists at all (an unrelated manager, an unrelated employee, or a delegate whose window has lapsed), the response is **404** — not a 403 that would confirm the id is real. If the caller already knows the request exists because it's their own, but this specific action isn't theirs to take (e.g. approving your own request), the response is **403**.
 
@@ -55,7 +55,17 @@ Accepts either `application/json` (no document) or `multipart/form-data` (all th
 
 **Response** `201` — the created request (`status: "SUBMITTED"`), **except for `SUPER_ADMIN`**: since nobody is positioned to review its own leave, the request is created directly as `status: "APPROVED"` with `decided_by` set to itself — it never passes through `SUBMITTED`, and no `LEAVE_REQUEST_SUBMITTED` notification fires (there's no recipient). Every other check above still applies unchanged (leave type active, working-day count, overlap, balance, document requirement) — the bypass only skips *who decides*, not the data-integrity checks.
 
-**Errors**: `400` leave type inactive/not found, range has zero working days, the balance would go negative and the leave type doesn't allow it, the leave type requires a document and none was attached, the attached file exceeds 5MB, or its real content isn't PDF/JPG/PNG · `409` overlaps an existing `SUBMITTED`/`APPROVED` request of the caller's · `422` validation.
+**Errors**: `400` leave type inactive/not found, range has zero working days, the balance would go negative and the leave type doesn't allow it, the leave type requires a document and none was attached, the attached file exceeds 5MB, or its real content isn't PDF/JPG/PNG · `409` overlaps an existing `SUBMITTED`/`APPROVED` request of the caller's, **or** falls inside a delegation window the caller has already begun serving · `422` validation.
+
+**Delegation interaction (three rules, all keyed on whether the delegation window has started):**
+
+| Situation | Outcome |
+|---|---|
+| The leave overlaps a delegation window the caller is **already serving** (`start_date ≤ today ≤ end_date`) | `409`. Nobody can be absent and standing in for an absent manager at once. The message names the window's end date, so the caller knows the first date they *can* book. |
+| The leave overlaps a delegation window that has **not started yet** | Allowed. Both the caller and the nominating manager get a `DELEGATION_LEAVE_CONFLICT` notification instead — refusing it would let a nomination the delegate never agreed to veto their leave, and FR-020 gives them no way to decline. |
+| The leave is submitted **while** the caller is serving a delegation **for their own manager**, for dates outside that window | Allowed, and **escalated**: the created request carries `hr_escalated: true`, the `LEAVE_REQUEST_SUBMITTED` notification goes to the nearest HR-tier ancestor *above* the away manager rather than to that manager, and HR may then approve/reject it directly (see the approve/reject endpoints below). Serving a delegation for some *other* manager does not escalate — that says nothing about the caller's own manager's availability. |
+
+The `hr_escalated` flag is decided once at submit time and never recomputed, so HR's authority over the request does not evaporate when the delegation window lapses.
 
 ---
 
@@ -261,6 +271,8 @@ Approves or rejects a `SUBMITTED` request.
 **Response** `200` — the updated request (`status: "APPROVED"` or `"REJECTED"`).
 
 **Errors**: `403` caller is the request's own employee, or an HR admin in-subtree but not the assigned manager · `404` caller has no relationship to this request at all (including an HR admin outside their own branch) · `409` request isn't `SUBMITTED`, **the period is closed by an issued payslip (see below)**, or **the leave starts after the employee's recorded last working day** · `422` validation.
+
+> ⬆️ **The one exception to "HR cannot decide directly": an escalated request** (`hr_escalated: true` — see `POST /leave-requests`). It was submitted while the employee was actively covering approvals for their own manager, so that manager is away and there is no first decision for HR to wait on; the request would otherwise sit until the payroll lock made it undecidable altogether. An HR-tier caller **whose scope covers the employee** may approve/reject it directly, and the audit entry records `acted_for` = the absent manager, so the trail reads "HR, on behalf of the manager" rather than implying HR overruled them. Still scope-checked, never role-checked alone — another branch's HR admin gets the usual `404`. The manager keeps their own authority for when they return: escalation adds a decider, it does not move ownership.
 
 > 🚪 **Leave cannot start after the employee's last working day.** `POST /leave-requests` refuses with `400` and an approval refuses with `409` — two checks rather than one, because the common order of events is "book leave, then resign", so the leaving date usually arrives *after* the request. Payroll would clamp its own window and simply ignore those days, but the request would still sit in the employee's history holding pending or taken days for a period they were not employed for, which is a balance that can never be right. A missing `last_working_day` means "still employed", the same convention `joining_date` uses.
 

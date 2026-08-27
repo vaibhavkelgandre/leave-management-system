@@ -123,6 +123,16 @@ Audit records:
 
 *Implemented via `delegations` table / `delegationService.js` / `POST /api/delegations` (manager-only, `manager_id` always the caller — never client-supplied) / `GET /api/delegations/mine`. A delegate's authority is checked live, per request, via `delegationRepository.findActiveDelegation` (today's date within the delegation's range) — not cached or assumed. `audit_logs.acted_for` records the manager being represented whenever a delegate (not the manager themself) acts. Frontend: `DelegationsPage.jsx` / `DelegationForm.jsx`. Tested in `delegations.test.js` and `leaveRequests.test.js`, including the named case: a delegate's authority stops when their window ends (`404` outside it, `200` inside it).*
 
+**A delegation and the delegate's own leave are reconciled**, since otherwise both could claim the same days and produce an approver who isn't there — the whole failure delegation exists to prevent. Five rules, all turning on whether the delegation window has started:
+
+1. A nomination overlapping the candidate's `SUBMITTED`/`APPROVED` leave is refused (`409`, naming the dates).
+2. Leave inside a window the employee has **already begun serving** is refused (`409`, naming the first bookable date).
+3. Leave overlapping a window that has **not started** is allowed, and both sides get a `DELEGATION_LEAVE_CONFLICT` notification — refusing would let a nomination the delegate never agreed to veto their leave, and this FR has no accept/reject flow for them to decline through.
+4. Leave submitted **while** serving a delegation for the employee's **own** manager is escalated: `leave_requests.hr_escalated`, the submission notification goes to the nearest HR ancestor above the away manager, and HR may decide it directly (recorded as `acted_for` = that manager). Serving a delegation for a *different* manager does not escalate.
+5. `GET /leave-requests/pending-count` and the client's `canDecideDirectly` both account for escalated requests, so HR's badge and buttons match what the server will accept.
+
+*Tested in `delegationLeaveRules.test.js` (rules 2–5) and `delegations.test.js` (rule 1).*
+
 ---
 
 ### ✅ FR-021: Audit Trail

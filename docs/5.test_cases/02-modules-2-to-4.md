@@ -134,6 +134,12 @@ This is the most thoroughly tested module in the app — and it explicitly satis
 **Server — `delegations.test.js`**
 - 401 unauthenticated; rejects non-manager (403); nominate + list via `/mine`; rejects self-delegation (400); rejects overlapping delegation dates (409); `/mine` scoped to the caller only
 - `/as-delegate`: 401 unauthenticated; open to a plain employee; empty for nobody-delegated-to; excludes rows where the caller is the nominating manager, not the delegate
+- Delegate-on-leave guard: refuses a nomination overlapping the candidate's **approved** leave (409, message names the dates), refuses one overlapping a merely **submitted** request, allows one where the overlapping request was withdrawn, allows one whose window sits clear of the leave
+
+**Server — `delegationLeaveRules.test.js`** — the delegation-vs-own-leave rules on the leave side. Every case is genuinely today-relative (a window is active only with respect to the current date), so this file uses `helpers/dates.js` rather than the fixed 2027 fixtures
+- Active window: refuses leave inside a window already being served (409, message names the first bookable date); allows leave after the window ends; a wholly-past window constrains nothing
+- Upcoming window: allows the leave and creates a `DELEGATION_LEAVE_CONFLICT` notification for **both** the delegate and the nominating manager, with the right wording each side; the request stays on the ordinary manager-decides path (`hr_escalated: false`)
+- Escalation: `hr_escalated: true` and HR can approve directly, with `acted_for` = the away manager in the audit trail; HR is notified and the away manager is not; the escalated request is counted in HR's `pending-count`; the manager can still decide it themselves; **no** escalation when the delegation is for a different manager; HR is **still** refused (403) a direct decision on an ordinary request; an out-of-branch HR admin gets 404 even on an escalated one
 
 **Client — `ApplyLeavePage.test.jsx`, `RequestLeaveForm.test.jsx`, `MyLeaveRequestList.test.jsx`, `RequestActions.test.jsx`, `RequestDetailModal.test.jsx`, `TeamRequestList.test.jsx`, `LeaveRequestTable.test.jsx`, `ApprovalsPage.test.jsx`, `DelegationForm.test.jsx`, `DelegateStatus.test.jsx`, `DelegationStatus.test.jsx`, `validation.test.js`**
 - Dedicated apply-leave route (not a modal); router-state hand-off of the new request's date back to the balances calendar
@@ -141,7 +147,8 @@ This is the most thoroughly tested module in the app — and it explicitly satis
 - Own request list: withdraw/cancel action visibility rules by status and date, decision comment display, calendar-selection highlighting, notification-driven auto-open of the detail modal
 - Actions: status-appropriate approve/reject/override buttons, `iconOnly` variant parity, HR-vs-assigned-manager visibility rules **including the `SUPER_ADMIN`-specific case** (hidden unless SUPER_ADMIN is genuinely the assigned manager)
 - Detail modal: full data + audit history + balance-in-context + document view/download + inline actions, `readOnly` suppression
-- Team list: approve/reject/override wiring, delegated-team badge logic, `readOnly` mode for the All Requests tab
+- Team list: approve/reject/override wiring, delegated-team badge logic, escalated-to-HR badge presence/absence, `readOnly` mode for the All Requests tab
+- `leaveRequestAuthz.test.js`: `canDecideDirectly` across non-HR viewers, HR-who-isn't-the-manager, HR-who-is, and the escalated case for both HR-tier roles
 - Read-only browse table; Approvals page tab switching (My Team vs. All Requests) and per-role tab visibility
 - Delegation form/status widgets, including multiple simultaneous active delegations
 

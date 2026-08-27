@@ -24,7 +24,9 @@ Every route below requires `requireAuth`. Nominating a delegate, and listing wha
 { "id": "...", "manager_id": "...", "delegate_id": "...", "delegate_first_name": "...", "delegate_last_name": "...", "start_date": "...", "end_date": "...", "created_at": "..." }
 ```
 
-**Errors**: `400` delegating to yourself, or the delegate doesn't exist/isn't active · `403` caller isn't a `MANAGER` · `409` overlaps a delegation this manager already has · `422` validation.
+**Errors**: `400` delegating to yourself, or the delegate doesn't exist/isn't active · `403` caller isn't a `MANAGER` · `409` overlaps a delegation this manager already has, **or** the candidate delegate holds a `SUBMITTED`/`APPROVED` leave request overlapping the window · `422` validation.
+
+> The delegate-on-leave refusal names the colliding dates and whether that leave is approved or still pending, since the manager's next attempt would otherwise be a guess. Both statuses block: a pending request is usually this manager's own decision to make, and nominating over it would leave them holding two mutually exclusive commitments for the same days. A `REJECTED`/`WITHDRAWN`/`CANCELLED` request never blocks.
 
 ---
 
@@ -79,6 +81,7 @@ The in-app notification bell. Every route below requires `requireAuth` only — 
 | `EMPLOYMENT_DATES_UPDATED` | Employee | `PATCH /api/employees/:id/employment-dates`, `POST /api/employees/:id/exit`. Deliberately quotes **no dates** — same restraint as `SALARY_STRUCTURE_UPDATED`, since a notification list is glanced at casually and often with someone else looking at the screen. The values are on the employee's profile page |
 | `DELEGATION_NOMINATED` | Delegate | `POST /api/delegations` |
 | `DELEGATION_STARTED` / `DELEGATION_ENDED` | Manager | **Time-based, not event-driven** — `notificationSweepService.js`, run hourly from `server.js`, not from any endpoint |
+| `DELEGATION_LEAVE_CONFLICT` | **Both** the delegate and the nominating manager, with different wording | `POST /api/leave-requests`, when the leave overlaps a delegation window that has **not started yet** (an already-started one is refused instead) |
 | `INVITE_ACCEPTED` | The HR admin who sent the invite (`invited_by`) | `POST /api/auth/invitations/accept` |
 | `PROFILE_CREATED` | The new employee themself | `POST /api/auth/invitations/accept` |
 

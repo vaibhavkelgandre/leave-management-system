@@ -11,7 +11,7 @@
 // looks like a step backward. RequestDetailModal keeps its own labeled
 // RequestActions instance untouched — it has the room icon-only doesn't need.
 import { useEffect, useRef, useState } from "react";
-import { Info, Repeat } from "lucide-react";
+import { Info, Repeat, ArrowUpRight } from "lucide-react";
 import { useAuth } from "../../hooks/useAuth.js";
 import { Card } from "../ui/Card.jsx";
 import { IconButton } from "../ui/IconButton.jsx";
@@ -30,6 +30,13 @@ function RequestRow({ request, canOverride, onChanged, onViewDetails, viewerId, 
     // row's manager differs from the viewer as a matter of course, so the
     // badge would just be noise rather than flagging anything unusual.
     const isDelegatedRow = !readOnly && request.employee_manager_id && request.employee_manager_id !== viewerId;
+    // An escalated request was submitted while the employee was covering their
+    // own manager's approvals, so HR decides it instead of that manager
+    // (resolveActingCapacity's hr_escalated branch). Worth saying on the row:
+    // without it, an approve/reject button appearing for HR on someone else's
+    // report — or a manager finding their own report's request already decided by
+    // HR — reads as a permissions bug rather than as the intended routing.
+    const isEscalatedRow = Boolean(request.hr_escalated);
 
     return (
         <li
@@ -50,6 +57,12 @@ function RequestRow({ request, canOverride, onChanged, onViewDetails, viewerId, 
                             <Badge className="flex items-center gap-1 bg-amber-100 text-amber-700">
                                 <Repeat className="h-3 w-3" aria-hidden="true" />
                                 Delegated for {request.manager_first_name} {request.manager_last_name}
+                            </Badge>
+                        )}
+                        {isEscalatedRow && (
+                            <Badge className="flex items-center gap-1 bg-sky-100 text-sky-700">
+                                <ArrowUpRight className="h-3 w-3" aria-hidden="true" />
+                                Escalated to HR
                             </Badge>
                         )}
                     </div>

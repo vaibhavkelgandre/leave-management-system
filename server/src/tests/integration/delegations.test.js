@@ -1,7 +1,7 @@
 import request from "supertest";
 import app from "../../app.js";
 import { describe, it, expect } from "vitest";
-import { createUser } from "./helpers/factories.js";
+import { createUser, createLeaveType, createLeaveRequest } from "./helpers/factories.js";
 import { loginAs } from "./helpers/authHelpers.js";
 
 describe("Delegations", () => {
@@ -138,6 +138,99 @@ describe("Delegations", () => {
             const response = await managerAgent.get("/api/delegations/as-delegate");
 
             expect(response.body.data).toEqual([]);
+        });
+    });
+    // Rules 1 and 4 of the delegation flow: a delegation and the delegate's own
+    // leave are two claims on the same days, so the nomination is refused rather
+    // than silently creating an approver who will not be there.
+    describe("refusing a delegate whose own leave overlaps the window", () => {
+        it("refuses a nomination overlapping the delegate's approved leave", async () => {
+            const hr = await createUser({ role: "HR_ADMIN", email: "deleg-onleave-hr@example.com" });
+            const manager = await createUser({ role: "MANAGER", managerId: hr.id, email: "deleg-onleave-mgr@example.com" });
+            const delegate = await createUser({ managerId: manager.id, email: "deleg-onleave-delegate@example.com" });
+            const leaveType = await createLeaveType({ annualEntitlement: 12 });
+
+            const leave = await createLeaveRequest({
+                employeeId: delegate.id,
+                leaveTypeId: leaveType.id,
+                startDate: "2027-09-06",
+                endDate: "2027-09-08",
+            });
+            const managerAgent = await loginAs(manager);
+            await managerAgent.post(`/api/leave-requests/${leave.id}/approve`).send({});
+
+            const response = await managerAgent
+                .post("/api/delegations")
+                .send({ delegateId: delegate.id, startDate: "2027-09-07", endDate: "2027-09-10" });
+
+            expect(response.statusCode).toBe(409);
+            expect(response.body.message).toMatch(/approved leave/i);
+            // The refusal names the colliding dates, so the manager's next
+            // attempt isn't a guess.
+            expect(response.body.message).toContain("2027-09-06");
+        });
+
+        it("refuses a nomination overlapping a leave request the delegate has only submitted", async () => {
+            const manager = await createUser({ role: "MANAGER", email: "deleg-pending-mgr@example.com" });
+            const delegate = await createUser({ managerId: manager.id, email: "deleg-pending-delegate@example.com" });
+            const leaveType = await createLeaveType({ annualEntitlement: 12 });
+
+            await createLeaveRequest({
+                employeeId: delegate.id,
+                leaveTypeId: leaveType.id,
+                startDate: "2027-09-20",
+                endDate: "2027-09-22",
+            });
+
+            const managerAgent = await loginAs(manager);
+            const response = await managerAgent
+                .post("/api/delegations")
+                .send({ delegateId: delegate.id, startDate: "2027-09-21", endDate: "2027-09-24" });
+
+            expect(response.statusCode).toBe(409);
+            expect(response.body.message).toMatch(/pending leave request/i);
+        });
+
+        it("allows a nomination when the delegate's overlapping request was withdrawn", async () => {
+            const manager = await createUser({ role: "MANAGER", email: "deleg-withdrawn-mgr@example.com" });
+            const delegate = await createUser({ managerId: manager.id, email: "deleg-withdrawn-delegate@example.com" });
+            const leaveType = await createLeaveType({ annualEntitlement: 12 });
+
+            const leave = await createLeaveRequest({
+                employeeId: delegate.id,
+                leaveTypeId: leaveType.id,
+                startDate: "2027-10-11",
+                endDate: "2027-10-13",
+            });
+            const delegateAgent = await loginAs(delegate);
+            await delegateAgent.post(`/api/leave-requests/${leave.id}/withdraw`).send({});
+
+            const managerAgent = await loginAs(manager);
+            const response = await managerAgent
+                .post("/api/delegations")
+                .send({ delegateId: delegate.id, startDate: "2027-10-11", endDate: "2027-10-15" });
+
+            expect(response.statusCode).toBe(201);
+        });
+
+        it("allows a nomination whose window sits either side of the delegate's leave", async () => {
+            const manager = await createUser({ role: "MANAGER", email: "deleg-clear-mgr@example.com" });
+            const delegate = await createUser({ managerId: manager.id, email: "deleg-clear-delegate@example.com" });
+            const leaveType = await createLeaveType({ annualEntitlement: 12 });
+
+            await createLeaveRequest({
+                employeeId: delegate.id,
+                leaveTypeId: leaveType.id,
+                startDate: "2027-11-15",
+                endDate: "2027-11-17",
+            });
+
+            const managerAgent = await loginAs(manager);
+            const response = await managerAgent
+                .post("/api/delegations")
+                .send({ delegateId: delegate.id, startDate: "2027-11-18", endDate: "2027-11-25" });
+
+            expect(response.statusCode).toBe(201);
         });
     });
 });

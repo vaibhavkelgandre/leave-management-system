@@ -177,6 +177,28 @@ describe("TeamRequestList", () => {
         expect(screen.getByText(/delegated for priya manager/i)).toBeInTheDocument();
     });
 
+    // Escalated rows are the one case where HR legitimately sees approve/reject
+    // on someone else's report, so the row has to say why — otherwise it reads
+    // as a permissions bug from either side.
+    it("shows an escalated badge on a request routed past the manager to HR", () => {
+        renderWithProviders(
+            <TeamRequestList
+                requests={[makeRequest({ hr_escalated: true, employee_manager_id: "mgr-1" })]}
+                canOverride={false}
+                onChanged={vi.fn()}
+            />,
+            { authValue: makeAuthValue({ user: { id: "hr-1", role: ROLES.HR_ADMIN } }) }
+        );
+        expect(screen.getByText(/escalated to hr/i)).toBeInTheDocument();
+    });
+
+    it("shows no escalated badge on an ordinary request", () => {
+        renderWithProviders(
+            <TeamRequestList requests={[makeRequest()]} canOverride={false} onChanged={vi.fn()} />
+        );
+        expect(screen.queryByText(/escalated to hr/i)).not.toBeInTheDocument();
+    });
+
     it("highlights the request selected from the team calendar, and no other", () => {
         renderWithProviders(
             <TeamRequestList

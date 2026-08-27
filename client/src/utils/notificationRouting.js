@@ -63,6 +63,14 @@ export function getNotificationRoute({ type, entity_id: entityId }) {
         case "DELEGATION_STARTED":
         case "DELEGATION_ENDED":
             return { pathname: "/dashboard/delegations", state: null };
+        // Sent to both sides of a delegation whose window a delegate has just
+        // booked leave inside. The manager's own Delegations page shows the
+        // nomination; the delegate has no such page (FR-020 never gave them
+        // one), and their action is to contact their manager rather than to open
+        // anything — so both land on the dashboard, where DelegateStatus and
+        // DelegationStatus surface the coverage for whichever side is viewing.
+        case "DELEGATION_LEAVE_CONFLICT":
+            return { pathname: "/dashboard", state: null };
         // The recipient is always the inviting HR admin, so this lands on My
         // Team — where the person who just accepted now appears, and where
         // that admin's own per-person controls live. Deliberately not All

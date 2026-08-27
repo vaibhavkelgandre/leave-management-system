@@ -26,7 +26,11 @@ import {
 } from "../repositories/leaveRequestRepository.js";
 import { getBalanceForUserAndType, seedBalancesForUser } from "../repositories/leaveBalanceRepository.js";
 import { insertLedgerEntry } from "../repositories/leaveBalanceLedgerRepository.js";
-import { findActiveDelegation, findActiveDelegatedManagerIds } from "../repositories/delegationRepository.js";
+import {
+    findActiveDelegation,
+    findActiveDelegatedManagerIds,
+    findDelegationsForDelegateOverlapping,
+} from "../repositories/delegationRepository.js";
 import { insertAuditLog, findAuditLogsForLeaveRequest } from "../repositories/auditLogRepository.js";
 import {
     insertLeaveRequestDocument,
@@ -37,6 +41,8 @@ import { assertLegalTransition } from "./leaveRequestStateMachine.js";
 import { uploadLeaveRequestDocument, getSignedDocumentUrl, fetchDocumentStream } from "./cloudinaryService.js";
 import {
     notifyLeaveRequestSubmitted,
+    notifyLeaveRequestEscalatedToHr,
+    notifyDelegationLeaveConflict,
     notifyLeaveRequestDecided,
     notifyLeaveRequestWithdrawnOrCancelled,
 } from "./notificationService.js";
@@ -140,6 +146,13 @@ async function isManagerOrDelegateOf(actorId, employeeManagerId) {
 // as anyone else. See the APPROVE/REJECT branch below for why this still
 // covers HR acting on their own or a MANAGER's leave request without any
 // extra role-casing.
+//
+// The single exception is an **escalated** request (`hr_escalated`): one the
+// employee submitted while actively covering approvals for their own manager,
+// so that manager is away and there is no first decision for HR to wait on. An
+// HR-tier actor in scope may decide those directly, recorded as acting for the
+// absent manager. The manager keeps their own authority for when they return —
+// this branch adds a decider, it does not move ownership.
 async function resolveActingCapacity(actor, request, action) {
     const isOwner = actor.id === request.employee_id;
 
@@ -184,6 +197,22 @@ async function resolveActingCapacity(actor, request, action) {
         return { actedFor: actingAsDelegate ? request.employee_manager_id : null };
     }
 
+    // The one exception to "only the assigned manager decides first": a request
+    // the employee submitted while standing in as their own manager's delegate.
+    // That manager handed their approvals away, so nobody is left to take the
+    // first decision, and the request would otherwise sit until the payroll lock
+    // made it undecidable altogether (see assertPeriodsOpen). `hr_escalated` is
+    // recorded once at submit time rather than re-derived here, precisely so this
+    // authority does not evaporate the moment the delegation window lapses.
+    //
+    // Still scope-checked, never role-checked alone — an HR admin from another
+    // branch is as much a stranger here as anywhere else. Returns the away
+    // manager as `actedFor`, so the audit trail reads "HR (on behalf of the
+    // manager)" rather than implying HR simply overruled them.
+    if (request.hr_escalated && (await isInActorsHrScope(actor, request.employee_id))) {
+        return { actedFor: request.employee_manager_id };
+    }
+
     // An HR-tier actor whose scope *does* include this employee already has a
     // legitimate reason to know the request exists (they can view/browse/
     // report on it elsewhere) — so a blocked direct approve/reject for them
@@ -199,6 +228,85 @@ async function resolveActingCapacity(actor, request, action) {
     }
 
     throw notFound("Leave request not found");
+}
+
+// Splits the delegations that collide with a candidate leave range into the two
+// groups the rules treat differently.
+//
+// Input: the submitting employee's id and the requested date range. Output:
+// `{ active, upcoming }` — delegations naming this employee as the delegate
+// whose window overlaps the leave, partitioned by whether that window has
+// already begun as of today.
+//
+// The partition *is* the rule, and it is the one part of this feature that looks
+// contradictory until stated plainly:
+//   - `active` means they are already mid-coverage. Leave inside those dates is
+//     refused (see assertNotServingDelegation) — someone cannot be simultaneously
+//     absent and standing in for an absent manager.
+//   - `upcoming` means the window has not started. That leave is allowed, and
+//     only warned about, because the alternative is letting a nomination the
+//     delegate never agreed to veto their leave, and FR-020 deliberately has no
+//     accept/reject flow for them to decline through.
+// "Has it started" is asked once, here, against one query — not twice against
+// two, which is how the allowed case and the refused case drift into overlapping.
+async function classifyOverlappingDelegations(employeeId, startDate, endDate) {
+    const overlapping = await findDelegationsForDelegateOverlapping({ delegateId: employeeId, startDate, endDate });
+    const today = todayDateKey();
+    return {
+        active: overlapping.filter((delegation) => delegation.start_date <= today),
+        upcoming: overlapping.filter((delegation) => delegation.start_date > today),
+    };
+}
+
+// Refuses leave that falls inside a delegation window the employee has already
+// started serving.
+//
+// Input: the `active` list from classifyOverlappingDelegations. Output: none.
+// Throws 409 naming the window and whose approvals it covers.
+//
+// 409 rather than 400: nothing about the request itself is malformed, and the
+// employee is not forbidden from taking leave — another record simply lays claim
+// to the same days, which is the same reasoning the overlapping-request refusal
+// uses. The message says when they *can* book instead, because "you are a
+// delegate" on its own does not tell someone what to do next.
+function assertNotServingDelegation(active) {
+    if (!active.length) {
+        return;
+    }
+
+    const [delegation] = active;
+    throw conflict(
+        `You are currently covering approvals for ${delegation.manager_first_name} ${delegation.manager_last_name} ` +
+            `from ${delegation.start_date} to ${delegation.end_date}, so you cannot take leave during that period. ` +
+            `Request leave for dates after ${delegation.end_date}, or ask your manager to nominate a different delegate.`
+    );
+}
+
+// Decides whether a submission goes to HR instead of the employee's own manager.
+//
+// Input: the submitting employee's user row (needs `manager_id`). Output: the
+// away manager's id when the request should be escalated, otherwise null.
+//
+// The condition is deliberately narrow: the employee must be actively standing
+// in **for their own manager** today. That manager having handed their approvals
+// away is the entire evidence that they are unavailable — an employee covering
+// some *other* manager says nothing about whether their own manager can decide,
+// and escalating those to HR would push work past a manager who is sitting right
+// there.
+//
+// Reuses findActiveDelegation, the same query resolveActingCapacity already uses
+// to answer "is this person an active delegate for that manager", rather than a
+// second notion of the same thing.
+async function resolveEscalationForSubmission(employee) {
+    if (!employee?.manager_id) {
+        return null;
+    }
+    const delegation = await findActiveDelegation({
+        managerId: employee.manager_id,
+        delegateId: employee.id,
+        onDate: todayDateKey(),
+    });
+    return delegation ? employee.manager_id : null;
 }
 
 // Input: candidate submission fields. Output: `{ workingDays }` — never
@@ -319,7 +427,14 @@ export async function previewWorkingDays({ startDate, endDate, startHalfDay, end
 // leave type doesn't allow that, if the leave type requires a document and
 // none was attached, or if an attached file's real content isn't one of the
 // accepted types (FR-012); 409 if it overlaps an existing pending/approved
-// request of the same employee's.
+// request of the same employee's, or falls inside a delegation window the
+// employee has already begun serving (assertNotServingDelegation).
+//
+// Two delegation-driven side effects, both after the request is safely created:
+// a request submitted while the employee is covering for their own manager is
+// marked `hr_escalated` and routed to HR instead of that manager
+// (resolveEscalationForSubmission), and one that merely overlaps a *future*
+// delegation window notifies both sides instead of being refused.
 export async function submitLeaveRequest(
     employeeId,
     { leaveTypeId, startDate, endDate, startHalfDay, endHalfDay, reason },
@@ -366,6 +481,17 @@ export async function submitLeaveRequest(
         throw conflict("You already have a pending or approved request that overlaps these dates");
     }
 
+    // Delegation coverage is a claim on the same calendar as another leave
+    // request, so it is checked alongside the overlap rule rather than further
+    // down with the balance arithmetic. `upcoming` is carried past the insert
+    // below, where it becomes a notification rather than a refusal.
+    const { active: activeDelegations, upcoming: upcomingDelegations } = await classifyOverlappingDelegations(
+        employeeId,
+        startDate,
+        endDate
+    );
+    assertNotServingDelegation(activeDelegations);
+
     // Requests spanning a year boundary are debited against the start date's
     // year — a documented simplification rather than splitting the deduction
     // proportionally across two balance rows.
@@ -397,6 +523,13 @@ export async function submitLeaveRequest(
     const submitter = await findAuthContextById(employeeId);
     const isSuperAdminSubmission = submitter?.role === "SUPER_ADMIN";
 
+    // Who this request is *for*, in the deciding sense. Non-null means the
+    // employee is standing in for their own manager right now, so that manager
+    // is away and HR decides instead (see resolveEscalationForSubmission). Not
+    // asked at all on the SUPER_ADMIN path, which is auto-approved and has
+    // nobody to escalate to.
+    const escalatedFromManagerId = isSuperAdminSubmission ? null : await resolveEscalationForSubmission(employee);
+
     const request = await insertLeaveRequest({
         employeeId,
         leaveTypeId,
@@ -406,6 +539,7 @@ export async function submitLeaveRequest(
         endHalfDay,
         workingDays,
         reason,
+        hrEscalated: Boolean(escalatedFromManagerId),
         ...(isSuperAdminSubmission
             ? { status: "APPROVED", decidedBy: employeeId, decidedAt: new Date() }
             : {}),
@@ -473,8 +607,23 @@ export async function submitLeaveRequest(
     const createdRequest = await findLeaveRequestById(request.id);
     // Notifies the employee's manager (or nearest HR ancestor if they report
     // straight to HR) — a non-critical side effect, so its own failure never
-    // fails the submission itself (see notifyLeaveRequestSubmitted).
-    await notifyLeaveRequestSubmitted(createdRequest);
+    // fails the submission itself (see notifyLeaveRequestSubmitted). An
+    // escalated request goes to HR *instead of* the manager: asking both for one
+    // decision is how a request ends up with nobody owning it.
+    if (escalatedFromManagerId) {
+        await notifyLeaveRequestEscalatedToHr(createdRequest, escalatedFromManagerId);
+    } else {
+        await notifyLeaveRequestSubmitted(createdRequest);
+    }
+
+    // The allowed half of the delegation clash: the window has not started, so
+    // the leave stands and both sides are told instead. One notification pair
+    // per colliding delegation — a delegate can be covering for two managers
+    // over the same days, and each of those managers needs to hear it.
+    for (const delegation of upcomingDelegations) {
+        await notifyDelegationLeaveConflict(delegation, createdRequest);
+    }
+
     return createdRequest;
 }
 
@@ -548,7 +697,9 @@ async function teamScopedEmployeeIds(actor) {
 // visibility, but most of it is still the actual manager's call to make
 // first, so counting all of it would badge HR with work that isn't theirs.
 // It is exactly the rule the client used to apply after downloading the
-// rows (canDecideDirectly in leaveRequestAuthz.js), moved server-side.
+// rows (canDecideDirectly in leaveRequestAuthz.js), moved server-side — plus
+// the escalated requests in their scope, which are theirs to decide precisely
+// because the assigned manager is away.
 //
 // One known gap, preserved rather than fixed here: an HR-tier caller who is
 // *also* someone's active delegate doesn't get those delegated rows counted,
@@ -557,7 +708,13 @@ async function teamScopedEmployeeIds(actor) {
 export async function countPendingDecisions(actor) {
     const isHrTier = actor.role === "HR_ADMIN" || actor.role === "SUPER_ADMIN";
     const delegatedManagerIds = isHrTier ? [] : await findActiveDelegatedManagerIds(actor.id, todayDateKey());
-    return countPendingDecisionsForManagers([actor.id, ...delegatedManagerIds]);
+    // Escalated requests are the second thing an HR-tier caller can decide
+    // (resolveActingCapacity), and they are invisible to the manager-keyed count
+    // above by definition — an escalated request's assigned manager is exactly
+    // the person who is *not* deciding it. Without this the badge would read
+    // zero while HR had approvals waiting.
+    const escalatedEmployeeIds = isHrTier ? await getHrScopedEmployeeIds(actor) : [];
+    return countPendingDecisionsForManagers([actor.id, ...delegatedManagerIds], escalatedEmployeeIds);
 }
 
 // Output: the APPROVED requests overlapping today, for whoever the caller can

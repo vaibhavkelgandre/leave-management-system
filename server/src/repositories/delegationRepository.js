@@ -77,6 +77,34 @@ export async function findActiveDelegatedManagerIds(delegateId, onDate) {
     return result.rows.map((row) => row.manager_id);
 }
 
+// Input: a delegate id and a candidate leave date range. Output: every
+// delegation naming this user as the delegate whose own window intersects that
+// range, joined against the nominating manager's name, earliest first.
+//
+// One query serves both halves of the delegation-vs-leave rule, because the two
+// differ only in *when* the colliding window starts, and the caller already
+// knows today's date:
+//   - a window that has already begun (start_date <= today) means the person is
+//     mid-coverage, and leave inside it is refused;
+//   - a window still in the future is allowed and merely warned about, since
+//     refusing it would let a nomination the delegate never agreed to block
+//     their leave, and FR-020 gives them no way to decline.
+// Splitting this into two queries would put that "today" comparison in SQL in
+// one place and in JavaScript in the other, which is how the two halves of one
+// rule end up disagreeing.
+export async function findDelegationsForDelegateOverlapping({ delegateId, startDate, endDate }) {
+    const result = await pool.query(
+        `SELECT d.id, d.manager_id, d.delegate_id, d.start_date, d.end_date,
+                m.first_name AS manager_first_name, m.last_name AS manager_last_name
+         FROM delegations d
+         JOIN users m ON m.id = d.manager_id
+         WHERE d.delegate_id = $1 AND d.start_date <= $3 AND d.end_date >= $2
+         ORDER BY d.start_date ASC`,
+        [delegateId, startDate, endDate]
+    );
+    return result.rows;
+}
+
 // Input: a "YYYY-MM-DD" date. Output: every delegation whose window begins
 // that day, joined against the delegate's name — backs
 // notificationSweepService.js's daily check for "should the manager be told
