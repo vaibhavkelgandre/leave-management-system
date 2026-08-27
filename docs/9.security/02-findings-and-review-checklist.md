@@ -23,6 +23,7 @@
 | Severity | Finding | Detail |
 |---|---|---|
 | **HIGH** | No IP-level rate limiting anywhere | Confirmed absent by grep and by `package.json` dependency list — login and the HR-registration-code endpoint have zero brute-force/credential-stuffing protection. The timing-safe comparison on the registration code is undermined by having no attempt-throttling in front of it at all. `password-reset/request` now has a **per-account** 15-minute cooldown enforced in SQL (`issuePasswordReset`), which caps mail-bombing and quota burn against any one address — but it is keyed on `user_id`, so an attacker cycling many known addresses is still unthrottled. That needs IP-level limiting, which remains unaddressed. |
+| **MEDIUM** | No CSRF protection; three endpoints genuinely reachable | The session is cookie-only (no `Authorization` header path) and `SameSite=None; Secure` in production, and there is no CSRF token. What protects the API today is incidental — the CORS allowlist forces a preflight on `application/json`, and `express.urlencoded()` is not enabled, so form-encoded bodies arrive unparsed and 422. **`multipart/form-data` defeats both**: it is a simple content type, so no preflight, and multer parses it including its non-file fields. That makes `POST /api/leave-requests`, `POST /api/employees/me/documents/:documentType` and `POST /api/employees/me/documents/custom` forgeable from any page a logged-in user visits. Exploiting the leave-request one needs a valid `leaveTypeId` UUID — unguessable from outside, but readable by **any authenticated employee**, which for a leave system is the realistic attacker. Not HIGH because only three routes are reachable and the impact is bounded (submitting leave as yourself, uploading a document to your own profile); not LOW because the defences are accidental, so a single line elsewhere — a body parser, a relaxed origin — exposes the whole mutating API at once. `changeMyPassword` is independently immune: it requires the current password. |
 | **MEDIUM** | No database transactions | Multi-step writes (e.g. `decideLeaveRequest`'s status update + ledger insert + audit insert) are three independent, non-atomic `pool.query` calls — a crash or connection drop between them leaves the ledger/audit trail out of sync with the request's actual status, with no rollback. |
 | **LOW** | Raw invite tokens logged to console outside production | Deliberate dev-mode stand-in for real email delivery, explicitly gated by `NODE_ENV !== "production"` — but any non-production environment's logs (including a shared `staging` env, if one existed) would contain live, usable tokens in plaintext. **Password-reset links are no longer in scope for this finding**: they're emailed now, and only fall back to a console log when the mail provider is unconfigured (never in a configured production environment). The reset path also deliberately keeps the link out of its failure logs, since it's a live credential. |
 | **LOW** | Polyglot file risk (theoretical) | Magic-byte sniffing only inspects the first bytes; a file with a valid PDF header followed by other embedded content would pass. Neutralized in practice by private storage + forced download + server-controlled Content-Type, but worth naming as an inherent limit of signature-based detection rather than a bug. |
@@ -30,10 +31,16 @@
 
 ### Recommended improvements
 
+
 1. Add `express-rate-limit` (or equivalent) to `/api/auth/login`, `/api/auth/password-reset/request`, and `/api/auth/register/hr` at minimum — this is the single highest-value security improvement available given everything else already implemented correctly.
-2. Wrap `decideLeaveRequest`'s three writes (and `submitLeaveRequest`'s insert+ledger+audit sequence) in an explicit Postgres transaction (`BEGIN`/`COMMIT`/`ROLLBACK` via a checked-out client, not the shared pool) so a partial failure can't desynchronize the ledger from the request's actual status.
-3. ~~Pin `jwt.verify`'s `algorithms` option explicitly.~~ **Done** — see the JWT algorithm allowlist entry above. Worth noting the finding understated it: the default accepted the entire HMAC family, not merely "no allowlist".
-4. ~~If a staging/shared non-production environment is ever introduced, swap the console-logged invite/reset links for a real (even sandboxed) email provider before that environment holds real accounts.~~ **Done for both** (`config/mailer.js` + `services/mailService.js`, now SendGrid over HTTPS): password-reset *and* invite links are emailed. The invite link is still also returned to HR in the response, deliberately — it's the documented fallback when mail is switched off or fails, and the UI promotes it in that case. The console-log path now only happens when the provider is unconfigured, which must never be true in a deployed environment: that fallback logs the whole message body, links included.
+2. **Close CSRF, in this order** — the first step is small enough that the rest are defence in depth:
+   1. **Switch the cookie to `SameSite=Lax`.** `None` exists only because the two Render services are cross-site, but the documented `/api/*` rewrite already makes requests **same-origin** (that is why `VITE_API_URL=/api` works), so the cookie is first-party in the deployed setup. `Lax` blocks cross-site `POST` outright, which closes the multipart hole and every latent one behind it in a single line. **Verify on the deployed pair rather than assuming**, and comment the dependency: if the rewrite is ever removed, `Lax` breaks login.
+   2. **Reject state-changing requests with a foreign `Origin`.** ~20 lines of middleware over `POST`/`PATCH`/`DELETE`, reusing the existing `CLIENT_ORIGIN` allowlist. No client change, and it survives someone re-splitting the origins and reverting step 1.
+   3. **Require a custom header on the three multipart routes** if you want the narrow fix instead of step 1 — any custom header forces a preflight, which cannot be forged cross-site.
+   4. **A double-submit CSRF token** last, not first: a readable cookie, a header on every mutating request, and an Axios interceptor. Only worth the moving parts if the three above can't be relied on.
+3. Wrap `decideLeaveRequest`'s three writes (and `submitLeaveRequest`'s insert+ledger+audit sequence) in an explicit Postgres transaction (`BEGIN`/`COMMIT`/`ROLLBACK` via a checked-out client, not the shared pool) so a partial failure can't desynchronize the ledger from the request's actual status.
+4. ~~Pin `jwt.verify`'s `algorithms` option explicitly.~~ **Done** — see the JWT algorithm allowlist entry above. Worth noting the finding understated it: the default accepted the entire HMAC family, not merely "no allowlist".
+5. ~~If a staging/shared non-production environment is ever introduced, swap the console-logged invite/reset links for a real (even sandboxed) email provider before that environment holds real accounts.~~ **Done for both** (`config/mailer.js` + `services/mailService.js`, now SendGrid over HTTPS): password-reset *and* invite links are emailed. The invite link is still also returned to HR in the response, deliberately — it's the documented fallback when mail is switched off or fails, and the UI promotes it in that case. The console-log path now only happens when the provider is unconfigured, which must never be true in a deployed environment: that fallback logs the whole message body, links included.
 
 ---
 
@@ -55,6 +62,11 @@ how often each one is actually the thing that's wrong.
 - [ ] Does the response include **sensitive columns it doesn't need**? Prefer a projection that omits them over masking.
 - [ ] Is [`docs/7.role_permissions_matrix.md`](../7.role_permissions_matrix.md) updated? A permission change absent from
       the matrix is an unfinished change.
+- [ ] If it **accepts `multipart/form-data`**, be aware it is forgeable cross-site: multipart is a simple content type,
+      so no CORS preflight stands in front of it and multer parses its non-file fields. Prefer JSON unless a file is
+      genuinely being uploaded.
+- [ ] Does it change state on a **`GET`**? It must not — a `GET` is trivially forgeable and cacheable. There are none
+      today; keep it that way.
 
 ### Anything touching files
 
@@ -78,6 +90,11 @@ how often each one is actually the thing that's wrong.
 - [ ] Is a new secret **backend-only**? A `VITE_`-prefixed variable is public in the bundle.
 
 ### Before deploying
+
+- [ ] **`express.urlencoded()` is still absent from `app.js`.** Its absence is what makes form-encoded CSRF fail on
+      every JSON endpoint. Adding it is a one-line, silent regression across the whole mutating API.
+- [ ] **`CLIENT_ORIGIN` is still an explicit allowlist**, never a wildcard or a wildcard-ish pattern — the CORS
+      preflight it forces is what most of the API's CSRF protection currently rests on.
 
 - [ ] `isMailConfigured()` true in that environment, so the link-logging fallback can't fire.
 - [ ] `CLIENT_ORIGIN` set to the real frontend origin — unset silently defaults to localhost.

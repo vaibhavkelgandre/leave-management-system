@@ -35,6 +35,34 @@ knowing:
 `POST /auth/logout` clears the cookie with the same options used to set it — mismatched options and the browser
 silently keeps it — and always returns `200`, since there's no server-side session to destroy.
 
+### Cross-site request forgery: protected, but incidentally
+
+The session is a cookie read **only** from `req.cookies` — there is no `Authorization` header path — and in production
+it carries `SameSite=None; Secure`, because the frontend and backend are separate `*.onrender.com` subdomains and
+`onrender.com` is a public suffix, making them cross-*site*. That is the textbook CSRF setup: the browser attaches the
+session to any request any page causes. **There is no CSRF token anywhere in this app.**
+
+What actually stops it today is three properties, none of which was chosen for this purpose. A cross-site page can
+only send a request without a CORS preflight if its content type is "simple":
+
+| Content type an attacker can send from another origin | Outcome |
+|---|---|
+| `application/json` | Not simple → preflight → origin allowlist refuses → the browser never sends it |
+| `application/x-www-form-urlencoded` | Arrives with no preflight, but **`express.urlencoded()` is not enabled**, so `req.body` is empty and the Zod validator answers `422` |
+| `text/plain` | Same — unparsed, `422` |
+| `multipart/form-data` | Arrives with no preflight **and multer parses it**, body fields included |
+
+So virtually every endpoint is safe because of the CORS allowlist and a body parser that isn't installed, not because
+of any anti-CSRF design. Two rules follow, and both are load-bearing:
+
+- **Never enable `express.urlencoded()`.** One line would expose every JSON endpoint to plain form CSRF, and nothing
+  would fail to warn you.
+- **Never widen `CLIENT_ORIGIN` toward a wildcard.** Browsers reject `*` with `credentials: true` outright, but a
+  loose allowlist removes the preflight defence that most of the API depends on.
+
+The three routes accepting `multipart/form-data` are where the incidental defences don't reach — see the CSRF finding
+in [Findings](02-findings-and-review-checklist.md).
+
 ### Passwords
 
 bcrypt, cost 10, via [`utils/password.js`](../../server/src/utils/password.js). bcrypt salts automatically, so identical

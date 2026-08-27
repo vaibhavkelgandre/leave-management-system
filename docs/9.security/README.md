@@ -23,6 +23,7 @@ their own scope. Everything in [01-controls.md](01-controls.md) follows from tak
 | Anonymous attacker guessing credentials or a token | bcrypt, 256-bit single-use tokens stored only as hashes, short TTLs. **Not** rate limiting — see the findings |
 | Someone reading the database | passwords and tokens are hashed at rest, so a dump alone redeems nothing |
 | Someone reading the logs | mostly fine, **except** the unconfigured-mail fallback, which logs live links |
+| A page a logged-in user visits, forging a request with their cookie | the CORS origin allowlist and the *absence* of `express.urlencoded()` — **incidental, not designed**. There is no CSRF token, and `multipart/form-data` bypasses both. See the findings |
 
 Explicitly **out of scope**: a malicious HR or super admin. Those roles are trusted by design — they read salary
 data and government IDs because that is the job. The audit trail is the control there, not prevention.
