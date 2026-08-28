@@ -73,6 +73,94 @@ describe("Holidays", () => {
         expect(overlappingRange.statusCode).toBe(409);
     });
 
+    // The boundary is the year, not today: declaring a holiday in the recent past
+    // is ordinary (a late government announcement, or a calendar entered
+    // mid-year), and the recount every holiday write triggers exists precisely
+    // so that still corrects the leave it affects. What is refused is a
+    // *previous year*, where a mistyped year would silently recount settled
+    // leave and void issued payslips.
+    describe("past-dated holidays", () => {
+        const currentYear = new Date().getFullYear();
+
+        it("rejects a holiday dated in a previous year", async () => {
+            const hr = await createRootHr({ email: "hr-holiday-lastyear@example.com" });
+            const agent = await loginAs(hr);
+
+            const response = await agent
+                .post("/api/holidays")
+                .send({ name: "Mistyped year", startDate: `${currentYear - 1}-07-15` });
+
+            expect(response.statusCode).toBe(400);
+            expect(response.body.message).toContain(`before ${currentYear}-01-01`);
+        });
+
+        it("allows a holiday earlier in the current year", async () => {
+            const hr = await createRootHr({ email: "hr-holiday-thisyear@example.com" });
+            const agent = await loginAs(hr);
+
+            const response = await agent
+                .post("/api/holidays")
+                .send({ name: "Earlier this year", startDate: `${currentYear}-01-02` });
+
+            expect(response.statusCode).toBe(201);
+        });
+
+        // The end date is what's checked, so a range straddling New Year still
+        // works — the same "does this reach into the present" test the
+        // delegation rule uses.
+        it("allows a range that starts last year but ends in this one", async () => {
+            const hr = await createRootHr({ email: "hr-holiday-newyear@example.com" });
+            const agent = await loginAs(hr);
+
+            const response = await agent.post("/api/holidays").send({
+                name: "New Year break",
+                startDate: `${currentYear - 1}-12-31`,
+                endDate: `${currentYear}-01-01`,
+            });
+
+            expect(response.statusCode).toBe(201);
+        });
+
+        it("rejects moving an existing holiday back into a previous year", async () => {
+            const hr = await createRootHr({ email: "hr-holiday-moveback@example.com" });
+            const agent = await loginAs(hr);
+
+            const created = await agent
+                .post("/api/holidays")
+                .send({ name: "Movable", startDate: `${currentYear}-03-04` });
+            expect(created.statusCode).toBe(201);
+
+            const response = await agent
+                .patch(`/api/holidays/${created.body.data.holiday.id}`)
+                .send({ name: "Movable", startDate: `${currentYear - 1}-03-04` });
+
+            expect(response.statusCode).toBe(400);
+        });
+
+        // The update schema is the create schema — a holiday has no partial
+        // edit, so the client resends the whole record. Checking the year
+        // unconditionally would make a legacy holiday impossible to rename,
+        // which this rule is not about.
+        it("still allows renaming a holiday left over from a previous year", async () => {
+            const hr = await createRootHr({ email: "hr-holiday-rename-old@example.com" });
+            const agent = await loginAs(hr);
+            // Written straight through the repository, the way a row predating
+            // this rule would already exist in the database.
+            const legacy = await createHoliday({
+                name: "Legacy holiday",
+                startDate: `${currentYear - 2}-06-10`,
+            });
+
+            const response = await agent.patch(`/api/holidays/${legacy.id}`).send({
+                name: "Legacy holiday (renamed)",
+                startDate: `${currentYear - 2}-06-10`,
+            });
+
+            expect(response.statusCode).toBe(200);
+            expect(response.body.data.holiday.name).toBe("Legacy holiday (renamed)");
+        });
+    });
+
     it("filters by year, including a range that spans a year boundary", async () => {
         const hr = await createRootHr({ email: "hr-holidays-filter@example.com" });
         const agent = await loginAs(hr);

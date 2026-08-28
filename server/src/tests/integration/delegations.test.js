@@ -3,6 +3,9 @@ import app from "../../app.js";
 import { describe, it, expect } from "vitest";
 import { createUser, createLeaveType, createLeaveRequest } from "./helpers/factories.js";
 import { loginAs } from "./helpers/authHelpers.js";
+import { todayDateKey, addDaysToDateKey } from "../../utils/dates.js";
+
+const day = (offset) => addDaysToDateKey(todayDateKey(), offset);
 
 describe("Delegations", () => {
     it("requires authentication", async () => {
@@ -45,6 +48,199 @@ describe("Delegations", () => {
             .send({ delegateId: manager.id, startDate: "2027-06-01", endDate: "2027-06-14" });
 
         expect(response.statusCode).toBe(400);
+    });
+
+    // A delegate's authority is resolved live (start_date <= today <= end_date),
+    // so a window that has already ended can never make anyone a delegate — it
+    // grants nothing today and cannot grant anything later. Rejected at the
+    // door rather than stored as a row that looks like cover and is not.
+    it("rejects a delegation whose window has already ended", async () => {
+        const manager = await createUser({ role: "MANAGER", email: "deleg-past-mgr@example.com" });
+        const delegate = await createUser({ role: "MANAGER", email: "deleg-past-delegate@example.com" });
+        const agent = await loginAs(manager);
+
+        const response = await agent
+            .post("/api/delegations")
+            .send({ delegateId: delegate.id, startDate: day(-10), endDate: day(-3) });
+
+        expect(response.statusCode).toBe(400);
+        expect(response.body.message).toMatch(/already ended/i);
+    });
+
+    // Only the end date is checked. A window that started in the past but has
+    // not finished is ordinary in-progress cover — a manager who forgot to set
+    // it up before leaving is nominating for the days that remain.
+    it("allows a delegation that started in the past but has not ended", async () => {
+        const manager = await createUser({ role: "MANAGER", email: "deleg-started-mgr@example.com" });
+        const delegate = await createUser({ role: "MANAGER", email: "deleg-started-delegate@example.com" });
+        const agent = await loginAs(manager);
+
+        const response = await agent
+            .post("/api/delegations")
+            .send({ delegateId: delegate.id, startDate: day(-2), endDate: day(5) });
+
+        expect(response.statusCode).toBe(201);
+    });
+
+    it("allows a delegation that both starts and ends today", async () => {
+        const manager = await createUser({ role: "MANAGER", email: "deleg-todayonly-mgr@example.com" });
+        const delegate = await createUser({ role: "MANAGER", email: "deleg-todayonly-delegate@example.com" });
+        const agent = await loginAs(manager);
+
+        const response = await agent
+            .post("/api/delegations")
+            .send({ delegateId: delegate.id, startDate: day(0), endDate: day(0) });
+
+        expect(response.statusCode).toBe(201);
+    });
+
+    // The manager's half of the "delegate booked leave over an upcoming window"
+    // rule. That is allowed by design and notifies both sides, but a
+    // notification is read once and then gone, while the Delegations page is
+    // what the manager comes back to — so /mine reports the clash on the row
+    // itself, beside the edit action that resolves it.
+    //
+    // Note these fixtures have to submit the leave *after* nominating:
+    // nominating over existing leave is refused outright, so this state is only
+    // reachable in that order — which is exactly why the warning is needed.
+    describe("reporting a delegate's own leave on GET /mine", () => {
+        async function nominateThenBookLeave({ prefix, leaveStatus }) {
+            const manager = await createUser({ role: "MANAGER", email: `${prefix}-mgr@example.com` });
+            const delegate = await createUser({ managerId: manager.id, email: `${prefix}-delegate@example.com` });
+            const leaveType = await createLeaveType({ annualEntitlement: 12 });
+            const managerAgent = await loginAs(manager);
+
+            const created = await managerAgent
+                .post("/api/delegations")
+                .send({ delegateId: delegate.id, startDate: "2027-05-03", endDate: "2027-05-14" });
+            expect(created.statusCode).toBe(201);
+
+            const leaveRequest = await createLeaveRequest({
+                employeeId: delegate.id,
+                leaveTypeId: leaveType.id,
+                startDate: "2027-05-05",
+                endDate: "2027-05-06",
+            });
+
+            if (leaveStatus === "APPROVED") {
+                await managerAgent.post(`/api/leave-requests/${leaveRequest.id}/approve`).send({});
+            }
+
+            return { managerAgent, delegate };
+        }
+
+        it("names the colliding dates and status for a pending request", async () => {
+            const { managerAgent } = await nominateThenBookLeave({
+                prefix: "deleg-clash-pending",
+                leaveStatus: "SUBMITTED",
+            });
+
+            const list = await managerAgent.get("/api/delegations/mine");
+
+            expect(list.statusCode).toBe(200);
+            expect(list.body.data[0].conflict_leave_start_date).toBe("2027-05-05");
+            expect(list.body.data[0].conflict_leave_end_date).toBe("2027-05-06");
+            expect(list.body.data[0].conflict_leave_status).toBe("SUBMITTED");
+        });
+
+        it("reports an approved absence the same way", async () => {
+            const { managerAgent } = await nominateThenBookLeave({
+                prefix: "deleg-clash-approved",
+                leaveStatus: "APPROVED",
+            });
+
+            const list = await managerAgent.get("/api/delegations/mine");
+
+            expect(list.body.data[0].conflict_leave_status).toBe("APPROVED");
+        });
+
+        it("reports nothing when the delegate has no overlapping leave", async () => {
+            const manager = await createUser({ role: "MANAGER", email: "deleg-clash-none-mgr@example.com" });
+            const delegate = await createUser({
+                managerId: manager.id,
+                email: "deleg-clash-none-delegate@example.com",
+            });
+            const leaveType = await createLeaveType({ annualEntitlement: 12 });
+            const managerAgent = await loginAs(manager);
+
+            await managerAgent
+                .post("/api/delegations")
+                .send({ delegateId: delegate.id, startDate: "2027-05-03", endDate: "2027-05-14" });
+
+            // Clear of the window on both sides.
+            await createLeaveRequest({
+                employeeId: delegate.id,
+                leaveTypeId: leaveType.id,
+                startDate: "2027-06-01",
+                endDate: "2027-06-02",
+            });
+
+            const list = await managerAgent.get("/api/delegations/mine");
+
+            expect(list.body.data[0].conflict_leave_start_date).toBeNull();
+            expect(list.body.data[0].conflict_leave_status).toBeNull();
+        });
+
+        // A withdrawn request is not an absence, and the nomination guard
+        // ignores those too — the two must agree, or the page would warn about a
+        // clash that an edit would then say does not exist.
+        it("ignores leave the delegate has since withdrawn", async () => {
+            const manager = await createUser({ role: "MANAGER", email: "deleg-clash-withdrawn-mgr@example.com" });
+            const delegate = await createUser({
+                managerId: manager.id,
+                email: "deleg-clash-withdrawn-delegate@example.com",
+            });
+            const leaveType = await createLeaveType({ annualEntitlement: 12 });
+            const managerAgent = await loginAs(manager);
+
+            await managerAgent
+                .post("/api/delegations")
+                .send({ delegateId: delegate.id, startDate: "2027-05-03", endDate: "2027-05-14" });
+
+            const leaveRequest = await createLeaveRequest({
+                employeeId: delegate.id,
+                leaveTypeId: leaveType.id,
+                startDate: "2027-05-05",
+                endDate: "2027-05-06",
+            });
+            await (await loginAs(delegate)).post(`/api/leave-requests/${leaveRequest.id}/withdraw`).send({});
+
+            const list = await managerAgent.get("/api/delegations/mine");
+
+            expect(list.body.data[0].conflict_leave_start_date).toBeNull();
+        });
+
+        it("scopes the clash to the delegation's own window, not the delegate's whole history", async () => {
+            const manager = await createUser({ role: "MANAGER", email: "deleg-clash-scope-mgr@example.com" });
+            const delegate = await createUser({
+                managerId: manager.id,
+                email: "deleg-clash-scope-delegate@example.com",
+            });
+            const leaveType = await createLeaveType({ annualEntitlement: 12 });
+            const managerAgent = await loginAs(manager);
+
+            // Two windows for the same manager; only the second collides.
+            await managerAgent
+                .post("/api/delegations")
+                .send({ delegateId: delegate.id, startDate: "2027-05-03", endDate: "2027-05-07" });
+            await managerAgent
+                .post("/api/delegations")
+                .send({ delegateId: delegate.id, startDate: "2027-08-02", endDate: "2027-08-06" });
+
+            await createLeaveRequest({
+                employeeId: delegate.id,
+                leaveTypeId: leaveType.id,
+                startDate: "2027-08-03",
+                endDate: "2027-08-04",
+            });
+
+            const list = await managerAgent.get("/api/delegations/mine");
+            const may = list.body.data.find((row) => row.start_date === "2027-05-03");
+            const august = list.body.data.find((row) => row.start_date === "2027-08-02");
+
+            expect(may.conflict_leave_start_date).toBeNull();
+            expect(august.conflict_leave_start_date).toBe("2027-08-03");
+        });
     });
 
     it("rejects a delegation that overlaps one this manager already has", async () => {

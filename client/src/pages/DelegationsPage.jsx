@@ -11,7 +11,10 @@ export function DelegationsPage() {
     const [delegations, setDelegations] = useState([]);
     const [loaded, setLoaded] = useState(false);
     const [loadError, setLoadError] = useState(null);
-    const [showForm, setShowForm] = useState(false);
+    // `null` = closed, `"new"` = nominating, a delegation object = editing that
+    // one. One piece of state rather than two booleans, so the modal cannot be
+    // open in both modes at once.
+    const [formTarget, setFormTarget] = useState(null);
     const [reloadToken, setReloadToken] = useState(0);
     const reload = () => setReloadToken((token) => token + 1);
 
@@ -36,8 +39,8 @@ export function DelegationsPage() {
         };
     }, [reloadToken]);
 
-    function handleCreated() {
-        setShowForm(false);
+    function handleSaved() {
+        setFormTarget(null);
         reload();
     }
 
@@ -47,14 +50,25 @@ export function DelegationsPage() {
                 title="Delegations"
                 description="While you're away, a delegate can approve your team's leave requests for a date range you set."
                 action={
-                    <Button icon={Plus} onClick={() => setShowForm(true)}>
+                    <Button icon={Plus} onClick={() => setFormTarget("new")}>
                         Nominate Delegate
                     </Button>
                 }
             />
 
-            <Modal open={showForm} onClose={() => setShowForm(false)} title="Nominate a delegate">
-                <DelegationForm onCreated={handleCreated} />
+            <Modal
+                open={formTarget !== null}
+                onClose={() => setFormTarget(null)}
+                title={formTarget === "new" ? "Nominate a delegate" : "Edit delegation"}
+            >
+                {/* Keyed so switching between nominating and editing a row (or
+                    between two rows) remounts the form with fresh state, the same
+                    reason HolidayForm and LeaveTypeForm are keyed by their id. */}
+                <DelegationForm
+                    key={formTarget === "new" ? "new" : formTarget?.id}
+                    delegation={formTarget === "new" ? undefined : formTarget}
+                    onSaved={handleSaved}
+                />
             </Modal>
 
             {!loaded && (
@@ -72,7 +86,7 @@ export function DelegationsPage() {
             )}
             {loaded && !loadError && delegations.length > 0 && (
                 <div className="mt-6">
-                    <DelegationList delegations={delegations} />
+                    <DelegationList delegations={delegations} onEdit={setFormTarget} />
                 </div>
             )}
         </div>

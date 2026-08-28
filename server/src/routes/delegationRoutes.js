@@ -11,13 +11,17 @@ import * as controller from "../controllers/delegationController.js";
 import { requireAuth } from "../middlewares/authMiddleware.js";
 import { requireRole } from "../middlewares/requireRole.js";
 import { validateBody } from "../validators/validate.js";
-import { createDelegationSchema } from "../validators/delegationValidator.js";
+import { createDelegationSchema, updateDelegationSchema } from "../validators/delegationValidator.js";
 
 const router = express.Router();
 
 router.use(requireAuth);
 
 router.post("/", requireRole("MANAGER"), validateBody(createDelegationSchema), controller.create);
+// Editing is MANAGER-only like creating, but the role gate is not what protects
+// it: ownership is checked in the service, which answers 404 for another
+// manager's delegation rather than 403 (NFR-5).
+router.patch("/:id", requireRole("MANAGER"), validateBody(updateDelegationSchema), controller.update);
 router.get("/mine", requireRole("MANAGER"), controller.listMine);
 router.get("/as-delegate", controller.listAsDelegate);
 

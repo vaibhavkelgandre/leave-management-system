@@ -17,9 +17,28 @@ export async function create(req, res, next) {
     }
 }
 
-// GET /api/delegations/mine — delegations the caller has nominated. Read-only:
-// there is no revoke endpoint, so a mistake is corrected by letting the window
-// pass or nominating a replacement.
+// PATCH /api/delegations/:id — change who is covering, or when. Owner-only:
+// the manager id comes from the session, never the body, so a manager can only
+// ever edit a delegation they themselves nominated.
+// 200 with the updated delegation; 404 for someone else's (or a non-existent)
+// delegation; 409 for a window that has already ended, one overlapping another
+// of the caller's delegations, or a delegate whose own leave falls inside it.
+export async function update(req, res, next) {
+    try {
+        const delegation = await delegationService.updateDelegationForManager(
+            req.user.id,
+            req.params.id,
+            req.body
+        );
+        sendSuccess(res, 200, "Delegation updated", delegation);
+    } catch (error) {
+        next(error);
+    }
+}
+
+// GET /api/delegations/mine — delegations the caller has nominated. There is
+// still no revoke endpoint: a nomination is corrected by editing it (PATCH
+// above) or by letting the window pass.
 export async function listMine(req, res, next) {
     try {
         const delegations = await delegationService.listDelegationsForManager(req.user.id);

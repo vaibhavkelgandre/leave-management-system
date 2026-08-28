@@ -13,7 +13,36 @@ import {
     deleteHoliday as deleteHolidayRepo,
 } from "../repositories/holidayRepository.js";
 import { reconcileWorkingDaysForHolidayChange } from "./leaveRequestService.js";
-import { conflict, notFound } from "../utils/appError.js";
+import { badRequest, conflict, notFound } from "../utils/appError.js";
+import { todayDateKey } from "../utils/dates.js";
+
+// Refuses a holiday that falls entirely before the current calendar year.
+//
+// Input: the resolved end date of the range. Output: none. Throws 400 naming
+// the boundary.
+//
+// The line is the year boundary rather than today, because declaring a holiday
+// in the recent past is a real thing HR does, not a mistake: governments
+// announce holidays at short notice, and an organisation setting this app up in
+// August has to enter January onwards. The recount that every holiday write
+// triggers exists precisely so a holiday declared *after* the leave it affects
+// still corrects those balances — see reconcileWorkingDaysForHolidayChange.
+// What the boundary stops is the genuinely damaging case: a mistyped year
+// silently recounting a previous year's leave and voiding settled payslips.
+//
+// The **end** date is what is checked, not the start, so a range straddling New
+// Year (31 Dec – 1 Jan, declared in January) is still allowed — the same
+// "does this still reach into the present" test the delegation rule uses.
+function assertHolidayIsNotInAPastYear(resolvedEndDate) {
+    const currentYearStart = `${todayDateKey().slice(0, 4)}-01-01`;
+
+    if (resolvedEndDate < currentYearStart) {
+        throw badRequest(
+            `A holiday cannot be declared for a date before ${currentYearStart}. ` +
+                `Check the year — declaring one in a past year would recount that year's leave and void settled payslips.`
+        );
+    }
+}
 
 // A holiday is global and feeds the working-day calculation, so adding,
 // moving or removing one changes what every live leave request over those
@@ -39,6 +68,8 @@ import { conflict, notFound } from "../utils/appError.js";
 // may void payslips — attributing that to a person is the point.
 export async function createHoliday({ name, startDate, endDate }, actorId) {
     const resolvedEndDate = endDate || startDate;
+
+    assertHolidayIsNotInAPastYear(resolvedEndDate);
 
     if (await findOverlappingHoliday({ startDate, endDate: resolvedEndDate })) {
         throw conflict("A holiday already covers one or more of these dates");
@@ -74,6 +105,17 @@ export async function getHolidayById(id) {
 export async function updateHoliday(id, { name, startDate, endDate }, actorId) {
     const existing = await getHolidayById(id);
     const resolvedEndDate = endDate || startDate;
+
+    // Only when the dates actually move. The update schema is the create schema
+    // (a holiday has no partial edit — the client always resends the whole
+    // record), so checking unconditionally would make a legacy holiday from a
+    // previous year impossible to *rename*, which the rule is not about. What
+    // it is about is placing a holiday in a stale year, and an edit that leaves
+    // the dates alone does not do that.
+    const datesChanged = startDate !== existing.start_date || resolvedEndDate !== existing.end_date;
+    if (datesChanged) {
+        assertHolidayIsNotInAPastYear(resolvedEndDate);
+    }
 
     if (await findOverlappingHoliday({ startDate, endDate: resolvedEndDate, excludeId: id })) {
         throw conflict("A holiday already covers one or more of these dates");

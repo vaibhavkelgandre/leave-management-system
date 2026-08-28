@@ -52,7 +52,7 @@ Append-only entries explaining every change to a balance (NFR-2) — see the not
 ---
 
 #### 🔁 `delegations`
-*Migration: `015_create_delegations.sql`*
+*Migrations: `015_create_delegations.sql`, `045_alter_delegations_add_updated_at.sql`*
 
 A manager nominating someone to approve on their behalf for a date range (FR-020).
 
@@ -62,9 +62,11 @@ A manager nominating someone to approve on their behalf for a date range (FR-020
 | `manager_id` | `UUID` | FK → `users.id`, `ON DELETE CASCADE` | |
 | `delegate_id` | `UUID` | FK → `users.id`, `ON DELETE CASCADE`, `chk_delegations_not_self` | Any active user the manager can currently see via `GET /users` — not restricted to another manager |
 | `start_date` / `end_date` | `DATE` | `NOT NULL`, `CHECK (end_date >= start_date)` | |
-| `created_at` | `TIMESTAMP` | default now | |
+| `created_at` / `updated_at` | `TIMESTAMP` | default now | *`updated_at` added by migration 045.* The table shipped without it because a delegation was write-once — FR-020 gave a manager no way to change one, so "created" and "last touched" could never differ. `PATCH /api/delegations/:id` makes them differ. Existing rows were backfilled from `created_at` rather than left `NULL`: for a row predating the edit endpoint, creation genuinely *was* the last change |
 
-**No DB-level overlap constraint** — two delegations for the same manager with intersecting ranges are rejected at the service layer (`delegationService.js`, `409`), same interval-overlap pattern as holidays.
+**No DB-level overlap constraint** — two delegations for the same manager with intersecting ranges are rejected at the service layer (`delegationService.js`, `409`), same interval-overlap pattern as holidays. The edit path passes an `excludeId` into that check, since a row always overlaps itself.
+
+**A delegation is edited in place, not superseded**, so there is no history of who previously covered a window. Nothing reads such a history: the record of what a delegate actually *did* is `audit_logs.acted_for`, which is append-only and unaffected by a later edit — which is also why a window that has already ended cannot be edited at all.
 
 ---
 
@@ -217,7 +219,7 @@ Append-only snapshot of a `salary_structures` row's values immediately before HR
 ---
 
 #### 🔔 `notifications`
-*Migrations: `032_create_notifications.sql`, `033_alter_notifications_add_types.sql`, `036_alter_notifications_add_profile_created.sql`, and one per type added since — most recently `044_alter_notifications_add_delegation_leave_conflict.sql`*
+*Migrations: `032_create_notifications.sql`, `033_alter_notifications_add_types.sql`, `036_alter_notifications_add_profile_created.sql`, and one per type added since — most recently `046_alter_notifications_add_delegation_edit_types.sql`*
 
 The in-app notification system: one row per (recipient, event) — never a broadcast row, so a multi-recipient event (e.g. both a manager and an employee caring about the same leave request) is one insert per recipient, not a wider table. Created by `notificationService.js`'s `notify*` helpers, almost all called right after the triggering action succeeds (leave request submit/decide/withdraw/cancel, profile submit/verify/send-back, salary slip confirm/void, manager reassignment, salary structure update, account status change, delegation nomination, invite acceptance) — always a non-critical side effect, so its own failure never fails the real action. The exceptions are the time-based ones, created by `notificationSweepService.js`'s periodic sweep (`server.js`, hourly) instead of a request handler: `DELEGATION_STARTED`/`DELEGATION_ENDED` (a delegation's start/end date isn't anyone's action on the day itself) and `LEAVE_REQUEST_OVERDUE`/`LEAVE_REQUEST_AWAITING_DECISION` (nobody *does* anything when a request goes stale — that's the problem being reported). See the dedupe note below.
 
@@ -226,7 +228,7 @@ The in-app notification system: one row per (recipient, event) — never a broad
 | `id` | `UUID` | PK | |
 | `recipient_id` | `UUID` | FK → `users.id`, `NOT NULL` | Who sees this notification — every read/mutate endpoint filters by this against the authenticated caller |
 | `actor_id` | `UUID` | FK → `users.id`, nullable | Who/what caused it (e.g. the employee who submitted) |
-| `type` | `VARCHAR(40)` | `CHECK IN (...)` | One entry per `notify*` helper — `LEAVE_REQUEST_SUBMITTED`, `LEAVE_REQUEST_DECIDED`, `LEAVE_REQUEST_WITHDRAWN_CANCELLED`, `PROFILE_SUBMITTED`, `PROFILE_VERIFIED`, `PROFILE_SENT_BACK`, `SALARY_SLIP_GENERATED`, `SALARY_SLIP_VOIDED`, `MANAGER_REASSIGNED`, `TEAM_MEMBER_ASSIGNED`, `SALARY_STRUCTURE_UPDATED`, `ACCOUNT_STATUS_CHANGED`, `DELEGATION_NOMINATED`, `DELEGATION_STARTED`, `DELEGATION_ENDED`, `INVITE_ACCEPTED` (033 added everything from `SALARY_SLIP_VOIDED` on), `PROFILE_CREATED` (036), `LEAVE_REQUEST_OVERDUE` (039), `LEAVE_REQUEST_AWAITING_DECISION` (040) and `EMPLOYMENT_DATES_UPDATED` (041), `LEAVE_DAYS_ADJUSTED` (042) and `DELEGATION_LEAVE_CONFLICT` (044) — the manager- and employee-facing halves of the overdue-request sweep, split into two types because `notificationRouting.js` maps type → destination with no knowledge of the viewer's role. 040 is a separate migration only because 039 was already applied and the ledger refuses an edited file. `DELEGATION_LEAVE_CONFLICT` is the reverse case: **one** type deliberately serving two recipients (a delegate who has booked leave inside their upcoming cover window, and the manager who nominated them), because both sides' action is the same conversation and both land on the same page |
+| `type` | `VARCHAR(40)` | `CHECK IN (...)` | One entry per `notify*` helper — `LEAVE_REQUEST_SUBMITTED`, `LEAVE_REQUEST_DECIDED`, `LEAVE_REQUEST_WITHDRAWN_CANCELLED`, `PROFILE_SUBMITTED`, `PROFILE_VERIFIED`, `PROFILE_SENT_BACK`, `SALARY_SLIP_GENERATED`, `SALARY_SLIP_VOIDED`, `MANAGER_REASSIGNED`, `TEAM_MEMBER_ASSIGNED`, `SALARY_STRUCTURE_UPDATED`, `ACCOUNT_STATUS_CHANGED`, `DELEGATION_NOMINATED`, `DELEGATION_STARTED`, `DELEGATION_ENDED`, `INVITE_ACCEPTED` (033 added everything from `SALARY_SLIP_VOIDED` on), `PROFILE_CREATED` (036), `LEAVE_REQUEST_OVERDUE` (039), `LEAVE_REQUEST_AWAITING_DECISION` (040) and `EMPLOYMENT_DATES_UPDATED` (041), `LEAVE_DAYS_ADJUSTED` (042) `DELEGATION_LEAVE_CONFLICT` (044), and `DELEGATION_REVOKED`/`DELEGATION_UPDATED` (046) — the manager- and employee-facing halves of the overdue-request sweep, split into two types because `notificationRouting.js` maps type → destination with no knowledge of the viewer's role. 040 is a separate migration only because 039 was already applied and the ledger refuses an edited file. `DELEGATION_LEAVE_CONFLICT` is the reverse case: **one** type deliberately serving two recipients (a delegate who has booked leave inside their upcoming cover window, and the manager who nominated them), because both sides' action is the same conversation and both land on the same page |
 | `entity_type` | `VARCHAR(20)` | `CHECK IN ('LEAVE_REQUEST','PROFILE','SALARY_SLIP','DELEGATION')` | What this is about — the frontend derives a deep-link route from `type`/`entity_type`/`entity_id` (`client/src/utils/notificationRouting.js`); deliberately no stored route/URL, keeping UI routing out of the database. `PROFILE` is reused for anything "about a user's own record" beyond just verification — manager reassignment, salary structure updates, status changes, invite acceptance — rather than adding a new entity type per field that changed |
 | `entity_id` | `UUID` | `NOT NULL` | The leave request/employee/salary slip/delegation id |
 | `message` | `TEXT` | `NOT NULL` | A single precomputed human-readable line (e.g. "Priya Sharma submitted a Sick Leave request") — not a template resolved client-side |

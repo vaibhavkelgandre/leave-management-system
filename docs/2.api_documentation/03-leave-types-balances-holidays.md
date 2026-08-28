@@ -157,7 +157,9 @@ Every route below requires `requireAuth`. Holidays are name + date-range rows (`
 { "name": "string, required", "startDate": "string, required, YYYY-MM-DD", "endDate": "string, optional, YYYY-MM-DD — defaults to startDate for a single-day holiday" }
 ```
 
-**Errors**: `403` · `409` date range overlaps an existing holiday · `422` validation (including `endDate` before `startDate`).
+**Errors**: `400` the range ends before 1 January of the current year · `403` · `409` date range overlaps an existing holiday · `422` validation (including `endDate` before `startDate`).
+
+> **A holiday can be declared in the recent past, but not in a previous year.** The past is deliberately allowed: governments announce holidays at short notice, an organisation setting this app up in August has to enter January onwards, and the recount every holiday write triggers exists precisely so a holiday declared *after* the leave it affects still corrects those balances. What the year boundary stops is the damaging case — a mistyped year silently recounting a previous year's leave and voiding settled payslips. The **end** date is what's checked, so a range straddling New Year (31 Dec – 1 Jan, entered in January) is still accepted.
 
 ---
 
@@ -177,7 +179,9 @@ Every route below requires `requireAuth`. Holidays are name + date-range rows (`
 
 **Body**: same shape as `POST /api/holidays`.
 
-**Errors**: `403` · `404` · `409` date range overlaps another holiday · `422` validation.
+**Errors**: `400` the range is being *moved* to end before 1 January of the current year · `403` · `404` · `409` date range overlaps another holiday · `422` validation.
+
+> The year check applies **only when the dates actually change**. This body is the same shape as `POST` (a holiday has no partial edit — the client resends the whole record), so checking unconditionally would make a holiday left over from a previous year impossible to *rename*, which the rule is not about.
 
 ---
 

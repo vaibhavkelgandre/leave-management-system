@@ -17,3 +17,23 @@ export const createDelegationSchema = z
         message: "endDate must be on or after startDate",
         path: ["endDate"],
     });
+
+// Body for editing an existing delegation. Every field is optional — a manager
+// swapping the delegate has no reason to resend dates that are not changing —
+// but at least one must be present, or the request asks for nothing and the
+// only honest answer is that it is malformed.
+//
+// The range is deliberately **not** refined here, unlike the create schema
+// above: with both dates optional, either half of the resulting window can come
+// from the stored row, so a body carrying only `startDate` can still invert it
+// and this schema would never see the other value. That check lives in
+// delegationService, which has the stored row in hand.
+export const updateDelegationSchema = z
+    .object({
+        delegateId: z.string().uuid("delegateId must be a valid id").optional(),
+        startDate: dateStringSchema.optional(),
+        endDate: dateStringSchema.optional(),
+    })
+    .refine((data) => Object.values(data).some((value) => value !== undefined), {
+        message: "Provide at least one of delegateId, startDate or endDate",
+    });

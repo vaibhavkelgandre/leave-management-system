@@ -113,6 +113,7 @@ Start with whichever question you're actually asking.
 
 | I want to… | Read |
 |---|---|
+| **read the project report** | [`docs/0.project_report/`](docs/0.project_report/README.md) — the submission document: the brief answered requirement by requirement, the authorization model, the seven design questions, and the known limitations |
 | **run this locally** | [`server/README.md`](server/README.md) · [`client/README.md`](client/README.md) |
 | **look up a command** | [`docs/10.commands/`](docs/10.commands/README.md) — setup, dev servers, tests, migrations per environment, all with placeholder credentials |
 | **understand the codebase** | [`docs/architecture/`](docs/architecture/README.md) — 20 files by concern, including end-to-end traces for every module |
@@ -142,7 +143,7 @@ docs/     see the map above
 | | |
 |---|---|
 | Roles | `EMPLOYEE`, `MANAGER`, `HR_ADMIN`, singleton `SUPER_ADMIN` |
-| Migrations | 38, tracked in a `schema_migrations` ledger, applied manually per environment |
-| Tests | 333 server (integration, real Postgres) · 433 client — `npm test` from the root |
+| Migrations | 44, tracked in a `schema_migrations` ledger, applied manually per environment |
+| Tests | 444 server (integration, real Postgres) · 468 client — `npm test` from the root |
 | Mail | SendGrid over HTTPS — three flows, each behind a feature flag |
 | Storage | Cloudinary, for employee documents |

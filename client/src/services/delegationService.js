@@ -5,6 +5,14 @@ export async function createDelegation({ delegateId, startDate, endDate }) {
     return unwrap(response);
 }
 
+// Change who is covering, or when. Every field is optional — send only what
+// changed; the server merges the patch over the stored row and re-runs every
+// guard a fresh nomination goes through.
+export async function updateDelegation(id, { delegateId, startDate, endDate }) {
+    const response = await apiClient.patch(`/delegations/${id}`, { delegateId, startDate, endDate });
+    return unwrap(response);
+}
+
 export async function getMyDelegations() {
     const response = await apiClient.get("/delegations/mine");
     return unwrap(response);

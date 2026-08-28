@@ -487,6 +487,62 @@ export async function notifyDelegationNominated(delegation) {
     }
 }
 
+// Input: the delegation as it stood *before* the edit (joined shape — carries
+// the outgoing delegate's id) and the manager who edited it.
+//
+// Tells the person who has just been swapped out that they are no longer
+// covering. Without it the only party who knows is the manager: the outgoing
+// delegate keeps an old DELEGATION_NOMINATED in their bell and a dashboard
+// tile that quietly stops appearing, which is indistinguishable from a bug.
+//
+// The message deliberately does **not** name whoever replaced them, following
+// the same restraint as SALARY_STRUCTURE_UPDATED and EMPLOYMENT_DATES_UPDATED:
+// the reader is no longer party to this delegation, and naming their
+// replacement discloses a colleague's assignment for no benefit — nothing the
+// outgoing delegate needs to do depends on who took over.
+export async function notifyDelegationRevoked(previousDelegation, manager) {
+    try {
+        await insertNotification({
+            recipientId: previousDelegation.delegate_id,
+            actorId: manager.id,
+            type: "DELEGATION_REVOKED",
+            entityType: "DELEGATION",
+            entityId: previousDelegation.id,
+            message:
+                `${manager.first_name} ${manager.last_name} reassigned the delegation for ` +
+                `${previousDelegation.start_date} to ${previousDelegation.end_date}, ` +
+                `so you are no longer covering their approvals.`,
+        });
+    } catch (error) {
+        console.error("Failed to create DELEGATION_REVOKED notification:", error.message);
+    }
+}
+
+// Input: the delegation after the edit (joined shape) and the manager who
+// edited it. Only called when the delegate is unchanged and the *dates* moved
+// — a swap sends DELEGATION_REVOKED to the outgoing delegate and an ordinary
+// DELEGATION_NOMINATED to the incoming one instead.
+//
+// Unlike the revoke message this one quotes the dates, because they are the
+// thing that changed and the recipient has to act on them: the whole content
+// of the news is which days they are now expected to be available for.
+export async function notifyDelegationUpdated(delegation, manager) {
+    try {
+        await insertNotification({
+            recipientId: delegation.delegate_id,
+            actorId: manager.id,
+            type: "DELEGATION_UPDATED",
+            entityType: "DELEGATION",
+            entityId: delegation.id,
+            message:
+                `${manager.first_name} ${manager.last_name} changed the dates you are covering their approvals for ` +
+                `to ${delegation.start_date} to ${delegation.end_date}`,
+        });
+    } catch (error) {
+        console.error("Failed to create DELEGATION_UPDATED notification:", error.message);
+    }
+}
+
 // Input: a delegation row from delegationRepository.findDelegationsStartingOn
 // (has delegate_first_name/delegate_last_name joined already). Notifies the
 // manager. Time-based, not event-driven — called from

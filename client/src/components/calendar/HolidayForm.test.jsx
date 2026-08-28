@@ -107,6 +107,44 @@ describe("HolidayForm", () => {
         expect(holidayService.createHoliday).not.toHaveBeenCalled();
     });
 
+    // Mirrors the server's rule. The boundary is the calendar year, not today:
+    // a holiday declared in the recent past is ordinary, one dated to a
+    // previous year would recount that year's leave and void settled payslips.
+    describe("a holiday dated in a previous year", () => {
+        const currentYear = new Date().getFullYear();
+
+        it("is refused before the request is sent", async () => {
+            renderWithProviders(<HolidayForm onSaved={vi.fn()} />);
+
+            await userEvent.type(screen.getByLabelText(/name/i), "Mistyped year");
+            fireEvent.change(screen.getByLabelText(/start date/i), {
+                target: { value: `${currentYear - 1}-07-15` },
+            });
+            fireEvent.submit(screen.getByRole("button", { name: /add holiday/i }).closest("form"));
+
+            expect(await screen.findByRole("alert")).toHaveTextContent(`before ${currentYear}-01-01`);
+            expect(holidayService.createHoliday).not.toHaveBeenCalled();
+        });
+
+        // The end date is what's checked, so a range straddling New Year still
+        // goes through.
+        it("still allows a range that ends in the current year", async () => {
+            holidayService.createHoliday.mockResolvedValue({});
+            renderWithProviders(<HolidayForm onSaved={vi.fn()} />);
+
+            await userEvent.type(screen.getByLabelText(/name/i), "New Year break");
+            fireEvent.change(screen.getByLabelText(/start date/i), {
+                target: { value: `${currentYear - 1}-12-31` },
+            });
+            fireEvent.change(screen.getByLabelText(/end date/i), {
+                target: { value: `${currentYear}-01-01` },
+            });
+            fireEvent.submit(screen.getByRole("button", { name: /add holiday/i }).closest("form"));
+
+            await vi.waitFor(() => expect(holidayService.createHoliday).toHaveBeenCalled());
+        });
+    });
+
     it("surfaces the server's message when the range overlaps another holiday", async () => {
         holidayService.createHoliday.mockRejectedValue({
             response: { data: { message: "A holiday already covers one or more of these dates" } },

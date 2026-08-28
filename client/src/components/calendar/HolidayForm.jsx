@@ -2,7 +2,7 @@ import { useState } from "react";
 import { createHoliday, updateHoliday } from "../../services/holidayService.js";
 import { toErrorMessage } from "../../services/httpError.js";
 import { Button } from "../ui/Button.jsx";
-import { eachDateKeyInRange } from "../../utils/dates.js";
+import { eachDateKeyInRange, todayDateKey } from "../../utils/dates.js";
 
 const inputClasses =
     "block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500";
@@ -39,6 +39,17 @@ export function HolidayForm({ holiday, onSaved }) {
 
         if (form.endDate && form.endDate < form.startDate) {
             setFormError("End date can't be before the start date.");
+            return;
+        }
+
+        // Mirrors the server's rule: a holiday may be declared in the recent
+        // past (a late announcement, or a calendar entered mid-year) but not in
+        // a previous year, where it would recount that year's leave and void
+        // settled payslips. The end date is what's checked, so a range
+        // straddling New Year still works.
+        const currentYearStart = `${todayDateKey().slice(0, 4)}-01-01`;
+        if ((form.endDate || form.startDate) < currentYearStart) {
+            setFormError(`Check the year — a holiday can't be declared before ${currentYearStart}.`);
             return;
         }
 

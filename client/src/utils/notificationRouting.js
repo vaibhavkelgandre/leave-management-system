@@ -55,7 +55,13 @@ export function getNotificationRoute({ type, entity_id: entityId }) {
         // No dedicated page exists for "delegations nominating me" (FR-020
         // never got an accept/reject flow) — the dashboard's DelegateStatus
         // tile is the only place this surfaces today.
+        // DELEGATION_REVOKED and DELEGATION_UPDATED are the two halves of a
+        // manager editing a delegation, and both are read by the *delegate*, so
+        // they land in the same place as the nomination itself — the manager's
+        // own Delegations page would bounce a plain employee to /403.
         case "DELEGATION_NOMINATED":
+        case "DELEGATION_REVOKED":
+        case "DELEGATION_UPDATED":
             return { pathname: "/dashboard", state: null };
         // The recipient here is always the nominating manager (see
         // notificationService.notifyDelegationStarted/Ended), so their own

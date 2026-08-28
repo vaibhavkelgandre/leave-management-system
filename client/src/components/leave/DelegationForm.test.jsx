@@ -12,7 +12,7 @@ vi.mock("../../services/delegationService.js");
 const managerAuthValue = makeAuthValue({ user: { id: "mgr-1", first_name: "Priya", role: "MANAGER" } });
 
 function renderForm(props = {}) {
-    return renderWithProviders(<DelegationForm onCreated={vi.fn()} {...props} />, { authValue: managerAuthValue });
+    return renderWithProviders(<DelegationForm onSaved={vi.fn()} {...props} />, { authValue: managerAuthValue });
 }
 
 describe("DelegationForm", () => {
@@ -48,11 +48,30 @@ describe("DelegationForm", () => {
         expect(delegationService.createDelegation).not.toHaveBeenCalled();
     });
 
+    // Mirrors the server's rule: a delegate's authority is resolved live, so a
+    // window that has already ended could never make anyone a delegate.
+    it("blocks submission when the window has already ended", async () => {
+        renderForm();
+
+        await screen.findByRole("option", { name: /rohit peer/i });
+        await userEvent.selectOptions(screen.getByLabelText(/delegate/i), "mgr-2");
+
+        // Both fireEvent.change, to bypass the End date input's own min= bound
+        // — the point of the test is the JS guard behind it.
+        const form = screen.getByRole("button", { name: /nominate delegate/i }).closest("form");
+        fireEvent.change(screen.getByLabelText(/start date/i), { target: { value: "2020-01-06" } });
+        fireEvent.change(screen.getByLabelText(/end date/i), { target: { value: "2020-01-10" } });
+        fireEvent.submit(form);
+
+        expect(await screen.findByRole("alert")).toHaveTextContent(/already ended/i);
+        expect(delegationService.createDelegation).not.toHaveBeenCalled();
+    });
+
     it("submits the delegation and reports the result", async () => {
         const created = { id: "deleg-1" };
         delegationService.createDelegation.mockResolvedValue(created);
-        const onCreated = vi.fn();
-        renderForm({ onCreated });
+        const onSaved = vi.fn();
+        renderForm({ onSaved });
 
         await screen.findByRole("option", { name: /rohit peer/i });
         await userEvent.selectOptions(screen.getByLabelText(/delegate/i), "mgr-2");
@@ -65,7 +84,37 @@ describe("DelegationForm", () => {
             startDate: "2027-06-01",
             endDate: "2027-06-14",
         });
-        expect(onCreated).toHaveBeenCalledWith(created);
+        expect(onSaved).toHaveBeenCalledWith(created);
+    });
+
+    it("prefills from an existing delegation and updates it instead of creating one", async () => {
+        const updated = { id: "deleg-1", delegate_id: "mgr-2" };
+        delegationService.updateDelegation.mockResolvedValue(updated);
+        const onSaved = vi.fn();
+        renderForm({
+            delegation: {
+                id: "deleg-1",
+                delegate_id: "mgr-2",
+                start_date: "2027-06-01",
+                end_date: "2027-06-14",
+            },
+            onSaved,
+        });
+
+        await screen.findByRole("option", { name: /rohit peer/i });
+        expect(screen.getByLabelText(/delegate/i)).toHaveValue("mgr-2");
+        expect(screen.getByLabelText(/start date/i)).toHaveValue("2027-06-01");
+        expect(screen.getByLabelText(/end date/i)).toHaveValue("2027-06-14");
+
+        await userEvent.click(screen.getByRole("button", { name: /save changes/i }));
+
+        expect(delegationService.updateDelegation).toHaveBeenCalledWith("deleg-1", {
+            delegateId: "mgr-2",
+            startDate: "2027-06-01",
+            endDate: "2027-06-14",
+        });
+        expect(delegationService.createDelegation).not.toHaveBeenCalled();
+        expect(onSaved).toHaveBeenCalledWith(updated);
     });
 
     it("surfaces the server's error message", async () => {

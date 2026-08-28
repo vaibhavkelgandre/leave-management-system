@@ -133,17 +133,33 @@ This is the most thoroughly tested module in the app — and it explicitly satis
 
 **Server — `delegations.test.js`**
 - 401 unauthenticated; rejects non-manager (403); nominate + list via `/mine`; rejects self-delegation (400); rejects overlapping delegation dates (409); `/mine` scoped to the caller only
+- Past windows: rejects one whose end date has passed (400); **allows** one that started in the past but hasn't ended, and one covering today only — only the end date is checked
+- `/mine` reports a delegate's own overlapping leave (`conflict_leave_*`): names the dates and status for a pending request and for an approved one; null when the delegate's leave sits clear of the window; **ignores a withdrawn request** (matching the nomination guard, so the list and the edit endpoint can't disagree); scoped per delegation, so one manager's clashing window doesn't taint their other one
 - `/as-delegate`: 401 unauthenticated; open to a plain employee; empty for nobody-delegated-to; excludes rows where the caller is the nominating manager, not the delegate
 - Delegate-on-leave guard: refuses a nomination overlapping the candidate's **approved** leave (409, message names the dates), refuses one overlapping a merely **submitted** request, allows one where the overlapping request was withdrawn, allows one whose window sits clear of the leave
+
+**Server — `holidays.test.js`** (past-dated block)
+- Rejects a holiday dated in a **previous year** (400, message names the boundary); allows one earlier in the current year; allows a range starting last year that **ends** in this one
+- Rejects *moving* an existing holiday back into a previous year; **still allows renaming** one left over from a previous year, since the update body resends unchanged dates
+
+**Server — `delegationEdit.test.js`** — `PATCH /delegations/:id`. Mostly today-relative for the same reason as `delegationLeaveRules.test.js`: the central rule is defined against the current date
+- Access: 401 unauthenticated; 403 non-manager; **404** for another manager's delegation and for one that doesn't exist
+- Swap: updates in place (`/mine` still has one row), leaves the untouched window alone, `DELEGATION_REVOKED` to the outgoing delegate and `DELEGATION_NOMINATED` to the incoming one
+- Dates only: `DELEGATION_UPDATED` to the same delegate, and **no** revoke
+- Re-runs every nomination guard on the merged result: overlap with the manager's *other* delegation (409), a new delegate on leave inside the window (409, naming the dates), self (400), deactivated delegate (400) — plus the regression guard that the row being edited is **not** counted as overlapping itself
+- Which rows are editable: in-progress ✅, ending today ✅, already ended ❌ (409)
+- Validation: a body that changes nothing (422), a malformed date (422), and a start date that inverts the *stored* window (400 — the validator can't see both halves)
 
 **Server — `delegationLeaveRules.test.js`** — the delegation-vs-own-leave rules on the leave side. Every case is genuinely today-relative (a window is active only with respect to the current date), so this file uses `helpers/dates.js` rather than the fixed 2027 fixtures
 - Active window: refuses leave inside a window already being served (409, message names the first bookable date); allows leave after the window ends; a wholly-past window constrains nothing
 - Upcoming window: allows the leave and creates a `DELEGATION_LEAVE_CONFLICT` notification for **both** the delegate and the nominating manager, with the right wording each side; the request stays on the ordinary manager-decides path (`hr_escalated: false`)
 - Escalation: `hr_escalated: true` and HR can approve directly, with `acted_for` = the away manager in the audit trail; HR is notified and the away manager is not; the escalated request is counted in HR's `pending-count`; the manager can still decide it themselves; **no** escalation when the delegation is for a different manager; HR is **still** refused (403) a direct decision on an ordinary request; an out-of-branch HR admin gets 404 even on an escalated one
 
-**Client — `ApplyLeavePage.test.jsx`, `RequestLeaveForm.test.jsx`, `MyLeaveRequestList.test.jsx`, `RequestActions.test.jsx`, `RequestDetailModal.test.jsx`, `TeamRequestList.test.jsx`, `LeaveRequestTable.test.jsx`, `ApprovalsPage.test.jsx`, `DelegationForm.test.jsx`, `DelegateStatus.test.jsx`, `DelegationStatus.test.jsx`, `validation.test.js`**
+**Client — `ApplyLeavePage.test.jsx`, `RequestLeaveForm.test.jsx`, `MyLeaveRequestList.test.jsx`, `RequestActions.test.jsx`, `RequestDetailModal.test.jsx`, `TeamRequestList.test.jsx`, `LeaveRequestTable.test.jsx`, `ApprovalsPage.test.jsx`, `DelegationForm.test.jsx`, `DelegationList.test.jsx`, `DelegateStatus.test.jsx`, `DelegationStatus.test.jsx`, `validation.test.js`**
 - Dedicated apply-leave route (not a modal); router-state hand-off of the new request's date back to the balances calendar
 - Form: type list, live working-day preview, backwards-range guard, submission wiring, server-error surfacing without clearing the form
+- Delegation form/list: create-vs-edit mode (prefill, PATCH instead of POST), and the edit action appearing for upcoming/in-progress windows but never for one that has already ended (the server refuses those, so the button would only fail)
+- Delegate-unavailable warning on a delegation row: names the colliding dates, says "approved" vs "requested" leave, keeps the edit action working beside it, and stays silent both when there's no clash and once the window has ended
 - Own request list: withdraw/cancel action visibility rules by status and date, decision comment display, calendar-selection highlighting, notification-driven auto-open of the detail modal
 - Actions: status-appropriate approve/reject/override buttons, `iconOnly` variant parity, HR-vs-assigned-manager visibility rules **including the `SUPER_ADMIN`-specific case** (hidden unless SUPER_ADMIN is genuinely the assigned manager)
 - Detail modal: full data + audit history + balance-in-context + document view/download + inline actions, `readOnly` suppression
