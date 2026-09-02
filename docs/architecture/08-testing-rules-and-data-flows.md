@@ -72,7 +72,7 @@ Grouped by area, with why each matters:
 
 #### Non-functional
 - **No load/performance test** — explicitly acknowledged as not done in `docs/4.non_functional_requirements.md` (NFR-7 marked 🟡 partial: "No load testing has been performed either way").
-- **No test asserting the *absence* of rate limiting** (i.e., no test currently documents this as a known, accepted gap) — worth a comment-only "known gap" marker near the login tests rather than a real test, so a future reader doesn't assume brute-force protection exists.
+- ~~**No test asserting the *absence* of rate limiting.**~~ **Obsolete** — rate limiting exists now (`server/src/middlewares/rateLimiter.js`) and `rateLimiting.test.js` covers each limit, including that a successful sign-in never consumes budget and that the authenticated API is deliberately left unlimited.
 
 ---
 
@@ -175,7 +175,7 @@ Test asserts 404 outside the window, and (a separate case) 200 for the identical
 - **Recalculating already-approved leave when a new holiday is added inside its date range** — the brief explicitly poses this as an open question ("what should happen?"); the current code's answer is "nothing happens" (no code path touches existing requests when a holiday is created/edited), which is a real, undocumented-as-a-decision gap rather than a reasoned "do nothing, and here's why."
 - **Pagination on any list endpoint** — acknowledged as a known gap in `docs/4.non_functional_requirements.md` (NFR-7), not a silent omission, but genuinely not implemented anywhere.
 - **A maintained date library** (date-fns/dayjs/luxon/moment) — the brief's technical-constraints table names this as a requirement; the codebase hand-rolls date math instead (`server/src/utils/dates.js`, mirrored in `client/src/utils/dates.js`).
-- **Rate limiting** on any endpoint, including login/password-reset/HR-registration-code — confirmed absent by direct grep, no package installed.
+- ~~**Rate limiting** on any endpoint.~~ **Built** — `express-rate-limit` on every pre-auth `/api/auth/*` route (`server/src/middlewares/rateLimiter.js`). Still not applied to the authenticated API, deliberately: the client polls on a timer and an office shares one IP.
 
 ---
 

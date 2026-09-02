@@ -59,8 +59,10 @@ migration shouldn't take down production unattended. See
 [`docs/8.deployment_and_operations/`](../8.deployment_and_operations/README.md).
 
 **"What would you do next?"**
-Named honestly in [07-known-gaps.md](03-talking-points-and-gaps.md). The top three: IP-level rate limiting, domain authentication
-for email deliverability, and actually load-testing the 200-employee target rather than only indexing for it.
+Named honestly in [07-known-gaps.md](03-talking-points-and-gaps.md). The top three: closing CSRF properly (the defences that
+hold today are incidental), domain authentication for email deliverability, and actually load-testing the 200-employee
+target rather than only indexing for it. IP-level rate limiting used to head this list and is now built
+(`server/src/middlewares/rateLimiter.js`).
 
 **"Why is X hardcoded / simplified?"**
 Several simplifications are deliberate and documented: a leave request overlapping a report period counts in full
@@ -100,7 +102,7 @@ same gap discovered by the audience reads as an oversight.
 
 | Gap | What to say |
 |---|---|
-| **No IP-level rate limiting** | "The password-reset cooldown is keyed on the user, so it stops one address being mail-bombed but not an attacker cycling many known addresses. That needs IP-level limiting, which this app has nowhere. It's logged as the top HIGH finding in our own security review." |
+| **Rate limiting is per process, not shared** | "This *was* the top HIGH finding — there was none at all. Every pre-auth route is limited by IP now: login counts failed attempts only, so an office behind one NAT is never throttled, while password reset counts successes too because a success is what sends mail. What's still true is that the counters live in memory, so they reset on deploy and wouldn't be shared across a second instance — that's a Redis store, and it only matters once we scale out." |
 | **Invite/reset links logged when mail is unconfigured** | "There's a dev fallback that logs the message body so you can work without credentials — and it contains the live link. Fine on a laptop, a credential leak in a deployed environment. The rule is that mail must be configured anywhere real, and it is." |
 | **JWT in an httpOnly cookie, 8h, no refresh flow** | "Stateless, so there's no server-side session to invalidate — but every request re-fetches the user, so deactivating someone takes effect on their next request. No refresh-token rotation; a longer-lived deployment would want one." |
 

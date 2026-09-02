@@ -50,7 +50,7 @@ The self-healing balance-seeding path (`listBalancesForUser`) is two queries tot
 #### Weaknesses (ranked)
 
 **HIGH**
-- No rate limiting anywhere in the backend (Part 26).
+- ~~No rate limiting anywhere in the backend (Part 26).~~ **Closed** — `express-rate-limit` on every pre-auth `/api/auth/*` route (`server/src/middlewares/rateLimiter.js`). No HIGH findings remain.
 
 **MEDIUM**
 - No database transactions around multi-statement writes (Part 26/27) — a real, if narrow, data-consistency risk.
@@ -168,5 +168,5 @@ Deployment:      Render — frontend Static Site + backend Web Service, separate
 6. **403 vs 404 is a deliberate policy, not an accident**: 404 when the caller has no legitimate reason to know a record exists at all; 403 when they already know it exists (it's theirs) but this action isn't theirs to take.
 7. **Google OAuth is login-only — never signup.** An unmatched email is a 403, proven-genuine-identity-but-no-permission, distinct from the 401 used for an invalid/unverifiable credential.
 8. **`requireAuth` re-fetches the live user from the DB on every request** rather than trusting the JWT payload — this is why deactivating someone or changing their role takes effect on their very next request, not at token expiry.
-9. **No ORM, no transactions, no rate limiting** — three deliberate/accepted gaps worth being able to name unprompted: raw SQL everywhere (control + recursive CTEs), multi-statement writes aren't atomic (a real if narrow consistency risk), and there's zero brute-force protection on login/reset/registration endpoints (the single highest-value security improvement available).
+9. **No ORM and no transactions** — two deliberate/accepted gaps worth being able to name unprompted: raw SQL everywhere (control + recursive CTEs), and multi-statement writes aren't atomic (a real if narrow consistency risk). Rate limiting *was* the third and is now built (`middlewares/rateLimiter.js`): IP-level, on the pre-auth routes only, counting failed sign-ins rather than all of them so a shared office IP is never throttled.
 10. **A leave request's `working_days` is snapshotted at submission and never recomputed** — editing the holiday calendar later cannot retroactively change an already-decided request's day count or the balance history it produced. This is also *why* "HR adds a holiday inside already-approved leave" currently does nothing — no code path recalculates existing requests.

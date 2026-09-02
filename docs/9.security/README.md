@@ -20,7 +20,7 @@ their own scope. Everything in [01-controls.md](01-controls.md) follows from tak
 
 | Secondary adversary | Defended by |
 |---|---|
-| Anonymous attacker guessing credentials or a token | bcrypt, 256-bit single-use tokens stored only as hashes, short TTLs. **Not** rate limiting — see the findings |
+| Anonymous attacker guessing credentials or a token | bcrypt, 256-bit single-use tokens stored only as hashes, short TTLs, **and now IP-level rate limiting on every pre-auth endpoint** (`middlewares/rateLimiter.js`) |
 | Someone reading the database | passwords and tokens are hashed at rest, so a dump alone redeems nothing |
 | Someone reading the logs | mostly fine, **except** the unconfigured-mail fallback, which logs live links |
 | A page a logged-in user visits, forging a request with their cookie | the CORS origin allowlist and the *absence* of `express.urlencoded()` — **incidental, not designed**. There is no CSRF token, and `multipart/form-data` bypasses both. See the findings |
@@ -30,6 +30,7 @@ data and government IDs because that is the job. The audit trail is the control 
 
 ## The one finding that matters most
 
-**No rate limiting anywhere.** Login, the HR-registration-code endpoint and password reset all accept unlimited
-attempts from one source — which also undermines the timing-safe comparison protecting the registration code.
-Ranked HIGH; details in [02-findings-and-review-checklist.md](02-findings-and-review-checklist.md).
+~~**No rate limiting anywhere.**~~ **Closed.** Login, Google login, the HR-registration-code endpoint, password
+reset and the single-use-token endpoints are now rate limited by client IP (`server/src/middlewares/rateLimiter.js`,
+`express-rate-limit`) — see the table in [02-findings-and-review-checklist.md](02-findings-and-review-checklist.md).
+The remaining top finding is CSRF (MEDIUM), where the defences that hold today are incidental rather than designed.

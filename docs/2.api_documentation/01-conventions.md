@@ -11,6 +11,16 @@
 - **Response envelope** — every endpoint below (except `/health`) returns:
   - Success: `{ "success": true, "message": string, "data": <payload or null> }`
   - Error: `{ "success": false, "message": string, "errors": [] }` — `errors` is populated (as `[{ field, message }]`) only for `422` validation failures.
+- **Rate limiting**: the unauthenticated `/api/auth/*` endpoints are limited by client IP (`server/src/middlewares/rateLimiter.js`). Over the limit the endpoint answers `429` in the standard error envelope, with `RateLimit-*` response headers. Nothing else in the API is limited — a limit over the whole API would throttle a whole office behind one NAT, and the client polls on a timer.
+
+  | Endpoints | Limit | Counts |
+  |---|---|---|
+  | `POST /auth/login`, `POST /auth/google` | 20 per 15 min | failed attempts only — a successful sign-in never consumes budget |
+  | `POST /auth/register/hr` | 5 per hour | every attempt |
+  | `POST /auth/password-reset/request` | 10 per hour | every attempt, including successful ones (a success is what sends an email) |
+  | `POST /auth/invitations/verify`, `POST /auth/invitations/accept`, `POST /auth/password-reset/confirm` | 30 per hour | failed attempts only |
+
+  Counts are per process and in memory, so they reset on deploy and are not shared if the API is ever scaled to more than one instance.
 - **Roles**: `EMPLOYEE`, `MANAGER`, `HR_ADMIN`, `SUPER_ADMIN`. `SUPER_ADMIN` is a singleton — exactly one ever exists, created once via `POST /auth/register/hr` — sitting above every `HR_ADMIN` so the account with nobody positioned to approve its leave or verify its profile (the old manager-less root `HR_ADMIN`) has somewhere to go. `SUPER_ADMIN` gets the same authorization treatment as `HR_ADMIN` everywhere below **except**: it can never call `POST /leave-requests/:id/override` (403 — see Leave Requests below), and its HR-scoped *write* actions (verify/send-back a profile, review a document, assign a salary structure, calculate/confirm/void payroll, view team leave requests) are scoped to only its **direct-report `HR_ADMIN`s**, never those `HR_ADMIN`s' own downstream teams — deliberately narrower than `HR_ADMIN`'s own subtree-wide scope, so `SUPER_ADMIN` can't reach into a subordinate `HR_ADMIN`'s team's affairs. Company-wide *read* access is broader for `SUPER_ADMIN` than for `HR_ADMIN`, not merely equal: the user list, the company-wide `GET /leave-requests/all` (which `HR_ADMIN` is refused outright), any individual leave request, and the FR-024 browse/report tools (`GET /leave-requests`, `/report`, `/report/csv`) all cover every employee for `SUPER_ADMIN`, while an `HR_ADMIN` sees only their own branch.
 - **Reporting hierarchy rules**, enforced server-side on every endpoint that sets `manager_id`:
   - `HR_ADMIN` can report to another `HR_ADMIN` — specifically whichever HR admin created them (`invited_by`, see `POST /users/invite`), forming a chain — or to the single `SUPER_ADMIN`.
@@ -92,7 +102,7 @@ Creates the single `SUPER_ADMIN` account, gated by a shared secret — **singlet
 }
 ```
 
-**Errors**: `401` invalid registration code · `409` a super admin already exists · `422` validation.
+**Errors**: `401` invalid registration code · `409` a super admin already exists · `422` validation · `429` rate limited (5/hour per IP).
 
 ---
 
@@ -116,7 +126,7 @@ Email + password login.
 }
 ```
 
-**Errors**: `401 "Invalid email or password"` · `422` validation.
+**Errors**: `401 "Invalid email or password"` · `422` validation · `429` rate limited (20 failed attempts/15 min per IP, shared with `POST /auth/google`).
 
 ---
 
@@ -133,7 +143,7 @@ Alternative login for an **existing** active employee via Google Sign-In. Never 
 
 **Response** `200` — sets the auth cookie, same `data.user` shape as `POST /api/auth/login`.
 
-**Errors**: `401` invalid/unverified Google token · `403 "No account found for this email"` (email doesn't match an active employee) · `422` validation.
+**Errors**: `401` invalid/unverified Google token · `403 "No account found for this email"` (email doesn't match an active employee) · `422` validation · `429` rate limited (shares the sign-in limit with `POST /auth/login`).
 
 ---
 
@@ -194,7 +204,7 @@ Confirms an invite token (from an invite link `CLIENT_BASE_URL/invite/:token`) i
 { "success": true, "message": "Invitation is valid", "data": { "email": "...", "first_name": "...", "expires_at": "..." } }
 ```
 
-**Errors**: `401 "This invitation link is invalid or has expired"` · `422` validation.
+**Errors**: `401 "This invitation link is invalid or has expired"` · `422` validation · `429` rate limited (30 failed attempts/hour per IP, shared across the token endpoints).
 
 ---
 
@@ -214,7 +224,7 @@ Sets the invited employee's password, activates the account (`INVITED → ACTIVE
 { "success": true, "message": "Invitation accepted", "data": { "user": { "id": "...", "email": "...", "status": "ACTIVE" } } }
 ```
 
-**Errors**: `401` invalid/expired/already-used token · `422` validation.
+**Errors**: `401` invalid/expired/already-used token · `422` validation · `429` rate limited (shares the token limit).
 
 ---
 
@@ -240,6 +250,8 @@ Three properties of this endpoint exist specifically to preserve the "same gener
 { "success": true, "message": "If that email exists, a password reset link has been sent", "data": null }
 ```
 
+**Errors**: `422` validation · `429` rate limited (10/hour per IP — this one counts successes too, since a success is what sends mail; the limit is on the IP, not the address, so it does not reintroduce the enumeration oracle the rest of this endpoint avoids).
+
 ---
 
 ### `POST /api/auth/password-reset/confirm`
@@ -258,6 +270,6 @@ Sets a new password using a reset token.
 { "success": true, "message": "Password reset successfully", "data": null }
 ```
 
-**Errors**: `401 "This password reset link is invalid or has expired"` (invalid, expired, or already-used token) · `422` validation.
+**Errors**: `401 "This password reset link is invalid or has expired"` (invalid, expired, or already-used token) · `422` validation · `429` rate limited (shares the token limit).
 
 ---
