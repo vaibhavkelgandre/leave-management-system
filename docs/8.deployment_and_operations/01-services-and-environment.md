@@ -106,7 +106,7 @@ Note the process does **not** run migrations at boot, and that's deliberate — 
 | `JWT_SECRET` | Signs the auth cookie. Changing it logs everyone out — which is also how you force that if you need to. ⚠️ **Nothing validates it at boot**, so an unset value starts a service that looks completely healthy and then answers `500` on the first *successful* login — see [03-troubleshooting.md](03-troubleshooting.md). |
 | `CLIENT_ORIGIN` | The frontend origin, for CORS. Defaults to `http://localhost:5173`, so **an unset value in production breaks every browser request** while curl still works. |
 | `CLIENT_BASE_URL` | The frontend URL, used to *build* invite and reset links. Backend variable despite being a frontend URL. No trailing slash. Unset → the server logs `CLIENT_BASE_URL is not set` and sends nothing. |
-| `BREVO_API_KEY` | From Brevo's **API Keys** tab, and it must start with `xkeysib-`. The adjacent **SMTP** tab hands out an `xsmtpsib-` key that the HTTP API rejects as `Key not found`. `SENDGRID_API_KEY` is still read as a fallback when this is unset. |
+| `BREVO_API_KEY` | From Brevo's **API Keys** tab, and it must start with `xkeysib-`. The adjacent **SMTP** tab hands out an `xsmtpsib-` key that the HTTP API rejects as `Key not found`. |
 | `MAIL_FROM` | Must be a **verified sender** or every send is a `403`. |
 | `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` | Document upload; without them uploads fail. |
 | `HR_REGISTRATION_CODE` | Gates the public HR self-registration flow. Compared with a timing-safe comparison; an unset value compares against `""`. |

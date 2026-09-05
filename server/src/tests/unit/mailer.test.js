@@ -2,21 +2,20 @@
 // exists. Pure env-var + payload-shape logic with `fetch` stubbed, so it's
 // tested here rather than through an HTTP round trip.
 //
-// Worth testing directly for two reasons. First, provider selection decides
-// whether mail goes out at all, and getting it wrong doesn't fail loudly: it
-// falls through to the unconfigured path, which logs the full message body —
-// and for invites and password resets that body *contains a live single-use
-// token*, so on a deployed environment a selection bug is a credential leak
-// into log aggregation rather than a missing email. Second, the provider swap
-// this file exists to absorb has now happened twice, and a payload shape is
-// exactly the kind of thing that is only wrong in production.
+// Worth testing directly for two reasons. First, the unconfigured path doesn't
+// fail loudly: it logs the full message body, and for invites and password
+// resets that body *contains a live single-use token* — so on a deployed
+// environment a config bug is a credential leak into log aggregation rather
+// than a missing email. Second, this file exists to absorb provider swaps (two
+// so far), and a payload shape is exactly the kind of thing that is only wrong
+// in production.
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { sendMail, isMailConfigured } from "../../config/mailer.js";
 
 // The suite's own .env/.env.test may set any of these, so each test starts
 // from "nothing configured" and the originals go back afterwards — otherwise
 // a case that deletes a var would leak that into every later test file.
-const MAIL_ENV_KEYS = ["BREVO_API_KEY", "SENDGRID_API_KEY", "MAIL_FROM", "NODE_ENV"];
+const MAIL_ENV_KEYS = ["BREVO_API_KEY", "MAIL_FROM", "NODE_ENV"];
 
 const originalEnv = {};
 let originalFetch;
@@ -38,9 +37,9 @@ afterEach(() => {
 });
 
 // Stubs a successful provider response and returns the mock so a test can
-// read back the URL, headers and parsed body it was called with. 201 rather
-// than 202 because that is what Brevo answers; sendMail checks `ok`, not a
-// specific code, precisely so both providers pass.
+// read back the URL, headers and parsed body it was called with. 201 because
+// that is what Brevo answers; sendMail checks `ok` rather than a specific
+// code, so the exact number is not load-bearing.
 function stubFetch({ ok = true, status = 201, body = "" } = {}) {
     const mock = vi.fn().mockResolvedValue({
         ok,
@@ -67,58 +66,38 @@ const FROM = "Leave Management System <sender@example.com>";
 const MESSAGE = { to: "someone@example.com", subject: "Hello", text: "plain body", html: "<p>rich body</p>" };
 
 describe("isMailConfigured", () => {
-    it("is false when no provider key is set", () => {
+    it("is false when no api key is set", () => {
         process.env.MAIL_FROM = FROM;
         expect(isMailConfigured()).toBe(false);
     });
 
     // A key without a sender is the common half-filled deployment, and it has
-    // to read as unconfigured: every provider refuses an unverified sender, so
-    // the alternative is a 4xx on every single send.
+    // to read as unconfigured: Brevo refuses an unverified sender, so the
+    // alternative is a 4xx on every single send.
     it("is false when a key is set but MAIL_FROM is not", () => {
         process.env.BREVO_API_KEY = "brevo-key";
         expect(isMailConfigured()).toBe(false);
     });
 
-    it("is true for Brevo with a sender", () => {
+    it("is true once both are present", () => {
         process.env.BREVO_API_KEY = "brevo-key";
         process.env.MAIL_FROM = FROM;
         expect(isMailConfigured()).toBe(true);
     });
 
-    it("is true for SendGrid alone, so the fallback stays usable", () => {
+    // Regression: a SendGrid key used to be honoured as a fallback. That
+    // branch was removed once Brevo was verified, because a fallback pointing
+    // at a provider whose free access expires is worse than none —
+    // isMailConfigured() would read true while nothing could be delivered.
+    it("ignores a leftover SENDGRID_API_KEY entirely", () => {
         process.env.SENDGRID_API_KEY = "sendgrid-key";
         process.env.MAIL_FROM = FROM;
-        expect(isMailConfigured()).toBe(true);
+        expect(isMailConfigured()).toBe(false);
+        delete process.env.SENDGRID_API_KEY;
     });
 });
 
-describe("sendMail provider selection", () => {
-    // The reason both branches exist: a deploy landing before BREVO_API_KEY is
-    // set must keep sending through SendGrid rather than falling through to
-    // the unconfigured path, which would log live reset links.
-    it("prefers Brevo when both keys are present", async () => {
-        enableSending();
-        process.env.BREVO_API_KEY = "brevo-key";
-        process.env.SENDGRID_API_KEY = "sendgrid-key";
-        process.env.MAIL_FROM = FROM;
-        const mock = stubFetch();
-
-        await expect(sendMail(MESSAGE)).resolves.toBe(true);
-        expect(mock.mock.calls[0][0]).toBe("https://api.brevo.com/v3/smtp/email");
-    });
-
-    it("falls back to SendGrid when only its key is present", async () => {
-        enableSending();
-        process.env.SENDGRID_API_KEY = "sendgrid-key";
-        process.env.MAIL_FROM = FROM;
-        const mock = stubFetch({ status: 202 });
-
-        await expect(sendMail(MESSAGE)).resolves.toBe(true);
-        expect(mock.mock.calls[0][0]).toBe("https://api.sendgrid.com/v3/mail/send");
-        expect(mock.mock.calls[0][1].headers.Authorization).toBe("Bearer sendgrid-key");
-    });
-
+describe("sendMail non-sending paths", () => {
     it("never sends under NODE_ENV=test, whatever is configured", async () => {
         process.env.NODE_ENV = "test";
         process.env.BREVO_API_KEY = "brevo-key";
@@ -146,6 +125,12 @@ describe("Brevo payload", () => {
         enableSending();
         process.env.BREVO_API_KEY = "brevo-key";
         process.env.MAIL_FROM = FROM;
+    });
+
+    it("posts to Brevo's transactional endpoint", async () => {
+        const mock = stubFetch();
+        await expect(sendMail(MESSAGE)).resolves.toBe(true);
+        expect(mock.mock.calls[0][0]).toBe("https://api.brevo.com/v3/smtp/email");
     });
 
     // Auth is an `api-key` header, not `Authorization: Bearer`. Sending a
@@ -247,17 +232,18 @@ describe("sendMail failures", () => {
     });
 
     // The provider's own error text is the only way to tell a bad key from an
-    // unverified sender, and naming the provider matters now that two
-    // branches exist.
-    it("surfaces the provider, status and body when a send is rejected", async () => {
+    // unverified sender. `Key not found` in particular is what Brevo answers
+    // for an `xsmtpsib-` SMTP credential used against the HTTP API — the
+    // wrong *kind* of key, not a wrong one — so the body has to reach the log.
+    it("surfaces the status and provider body when a send is rejected", async () => {
         stubFetch({ ok: false, status: 401, body: '{"message":"Key not found"}' });
 
-        await expect(sendMail(MESSAGE)).rejects.toThrow(/brevo.*401.*Key not found/s);
+        await expect(sendMail(MESSAGE)).rejects.toThrow(/401.*Key not found/s);
     });
 
     it("reports a network-level failure as one thrown error", async () => {
         globalThis.fetch = vi.fn().mockRejectedValue(new Error("socket hang up"));
 
-        await expect(sendMail(MESSAGE)).rejects.toThrow(/brevo.*unreachable.*socket hang up/s);
+        await expect(sendMail(MESSAGE)).rejects.toThrow(/unreachable.*socket hang up/s);
     });
 });

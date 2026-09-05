@@ -268,7 +268,7 @@ Four files, each allowed to know one thing:
 
 | File | Owns | Must not know |
 |---|---|---|
-| `config/mailer.js` | *how* to reach a provider — the Brevo HTTPS call (SendGrid retained as a fallback), its timeout, From parsing | what any message says, or whether it's on |
+| `config/mailer.js` | *how* to reach a provider — the Brevo HTTPS call, its timeout, From parsing | what any message says, or whether it's on |
 | `config/mailFeatures.js` | *whether* a flow may send right now | templates, recipients, transport |
 | `utils/mailLayout.js` | the shared HTML/text shell | which flows exist |
 | `services/mailService.js` | *what* each message says | provider details, flag plumbing |
@@ -315,7 +315,7 @@ unreachable.
 
 #### Sender identity
 
-`isMailConfigured()` means a provider key (`BREVO_API_KEY`, else `SENDGRID_API_KEY`) **and** `MAIL_FROM`. Unlike the SMTP setup it replaced there's **no
+`isMailConfigured()` means `BREVO_API_KEY` **and** `MAIL_FROM`. Unlike the SMTP setup it replaced there's **no
 fallback sender** — SMTP could default to the authenticated mailbox because that mailbox *was* the sender, whereas
 SendGrid 403s an unverified `from`. So a missing `MAIL_FROM` reads as unconfigured rather than sending as someone else.
 
@@ -342,7 +342,7 @@ one signal that separates a real invite from phishing.
 
 | Symptom | Cause |
 |---|---|
-| `Mail provider is not configured` at boot | no provider key (`BREVO_API_KEY`/`SENDGRID_API_KEY`) or no `MAIL_FROM` |
+| `Mail provider is not configured` at boot | `BREVO_API_KEY` or `MAIL_FROM` missing |
 | `[mail:not-configured]` at send time | same, and the body is now in your logs |
 | `[mail:disabled] feature=…` | that flow's flag is off |
 | `(403)` from the provider | `MAIL_FROM` is not a verified sender |

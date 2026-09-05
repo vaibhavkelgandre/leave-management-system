@@ -108,7 +108,7 @@ Often an **unmigrated database**, not an API fault. Run `npm run migrate:status`
 
 | Log line | Cause | Fix |
 |---|---|---|
-| `Mail provider is not configured` at boot | no provider key (`BREVO_API_KEY`, or `SENDGRID_API_KEY` as fallback) or no `MAIL_FROM` — checked together | set both, confirm the restart |
+| `Mail provider is not configured` at boot | `BREVO_API_KEY` or `MAIL_FROM` missing — they're checked together | set both, confirm the restart |
 | `[mail:not-configured] to=… subject=…` | same, at send time. ⚠️ **this logs the whole body, including live invite/reset links** | configure it; treat those logs as secrets meanwhile |
 | `[mail:disabled] feature=…` | that flow's flag is off | flip it |
 | `Mail provider (brevo) rejected the message (401): {"message":"Key not found"}` | **an `xsmtpsib-` key from Brevo's SMTP tab instead of an `xkeysib-` one from API Keys** — the single most likely cause | regenerate on the **API Keys** tab |
@@ -137,9 +137,10 @@ templates already do everything they can.
 ### Historical: SendGrid, and why the provider moved
 
 SendGrid's free access lasts two months and then stops sending, so mail moved to **Brevo** (permanent free tier,
-and single-sender verification that needs no DNS). `config/mailer.js` still carries a SendGrid branch as migration
-scaffolding — `BREVO_API_KEY` takes precedence, and the fallback exists only so the env-var and deploy order cannot
-leave mail unconfigured, which would log live reset links. **Delete that branch once Brevo is settled.**
+and single-sender verification that needs no DNS). A SendGrid branch lived in `config/mailer.js` briefly as migration
+scaffolding and has been removed: a fallback to a provider whose access expires is worse than none, because
+`isMailConfigured()` would still read `true` while nothing could be delivered. `SENDGRID_API_KEY` is no longer read
+anywhere — delete it from the service's environment.
 
 ### Historical: SMTP
 

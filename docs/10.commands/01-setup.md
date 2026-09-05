@@ -104,7 +104,6 @@ NODE_ENV=test
 DB_NAME=leave_management_system_test
 DATABASE_URL=
 BREVO_API_KEY=
-SENDGRID_API_KEY=
 MAIL_FROM=
 ```
 
