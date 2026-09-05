@@ -104,6 +104,25 @@
 > allowlist is what makes "we accept exactly what we issue" a fact instead of a coincidence. Pinned on **verify**
 > only: `signAuthToken` already emits HS256, and verify is the side where an attacker-supplied header gets a vote.
 
+> 💥 **A missing `JWT_SECRET` boots a service that looks perfectly healthy and then answers `500` on the first
+> *successful* login — cost a debugging session on the new Render deployment.** `signAuthToken`
+> (`utils/jwt.js`) reads `process.env.JWT_SECRET` at call time and **nothing validates it at startup**, so the
+> process starts, `/health` returns `200`, the `[mail]` banner prints, and `GET /auth/bootstrap-status` answers
+> correctly. Only a *correct* password reaches `jwt.sign(payload, undefined)`, which throws
+> `secretOrPrivateKey must have a value` and surfaces as a `500`.
+> - **The 401-vs-500 split is the whole diagnosis, and it is counter-intuitive**: a *wrong* password returns a
+>   clean `401` because it fails at the bcrypt compare, *before* signing. So "login is broken but only with the
+>   right credentials" means the failure is after the password check — which is where token signing lives. Any
+>   other reading sends you hunting through the credential path, which is fine.
+> - **It corrupts `registerHrRoot` in a way that looks like something else**: the user row commits before the
+>   token is signed, so the account is created while the response `500`s and nobody is signed in. Reads as
+>   "registration failed" when it half-succeeded, leaving a real account nobody can log into until the secret
+>   is set.
+> - **The fix is still open**: validate the required secrets once in `server/src/server.js` and refuse to boot
+>   without them, naming the missing variable. Same fail-fast principle as `assertTestDatabase` — a required
+>   secret whose absence is only discovered at first use is the shape of this bug, and `JWT_SECRET` is not the
+>   only variable in that state.
+
 > 🚪 **Setting up a fresh deployment has a UI now, and two things about it are load-bearing.** `POST /auth/register/hr` was API-only, so the first visitor to a new deployment met a sign-in form that no credential could satisfy and no explanation — the only way forward was reading the README and using curl. `GET /auth/bootstrap-status` (public, unauthenticated, returns the single boolean `needsBootstrap`) is what lets `LoginPage` say so and offer `/register` (`RegisterSuperAdminPage`).
 > - **`LoginPage` and `BootstrapOnlyRoute` must keep reading one source** (`hooks/useBootstrapStatus.js`). A login page that says "set one up" beside a `/register` that redirects back to it is an infinite bounce, and one hook is what makes the two incapable of disagreeing.
 > - **`/register` is nested *inside* `PublicOnlyRoute`, not beside it.** The setup form signs its own creator in via the same response, so `PublicOnlyRoute` — which this app has always treated as the single owner of post-authentication navigation — is what sends them to the dashboard. If `BootstrapOnlyRoute` were the outer guard it would race that, redirecting a freshly-created admin to `/login` on a status answer that went stale the instant they registered.

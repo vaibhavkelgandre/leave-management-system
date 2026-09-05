@@ -29,7 +29,10 @@ as a generic "unable to load X" and is easy to misdiagnose as an API or CORS fau
 
 Every one prints the target database first. Read that line before letting anything proceed.
 
-## Running against Render from your machine
+## Running against Neon from your machine
+
+The database is **Neon**, not Render-managed Postgres — moved there in September 2026 because Render's free
+Postgres expires 30 days after creation and is then deleted. Neon's free tier does not expire.
 
 From `server/`, in PowerShell:
 
@@ -53,7 +56,13 @@ Remove-Item Env:DATABASE_URL, Env:DB_SSL
 `npm run migrate` would silently target production. `DATABASE_URL=... npm run migrate` is bash syntax and does not work
 in PowerShell.
 
-Use the **External** URL; the Internal one only resolves inside Render's network.
+⚠️ **Use Neon's direct connection string — the host *without* `-pooler` — for migrations and for the app alike.**
+`scripts/migrations.js` takes a session-scoped `pg_advisory_lock`, which a transaction pooler does not hold across
+statements, so the guard against two concurrent deploys applying the same pending list would quietly protect nothing.
+The pool is `max: 10`, so the pooler buys nothing to offset that.
+
+`DB_SSL=true` is required even though Neon's connection string already carries `sslmode=require`: `config/db.js`
+passes `ssl` explicitly and that wins over the URL.
 
 ## Baselining a database that predates the ledger
 

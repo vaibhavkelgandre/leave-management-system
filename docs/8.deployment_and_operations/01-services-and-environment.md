@@ -68,8 +68,8 @@ top-level import killed the process.
 
 | Dependency | Protocol | Notes |
 |---|---|---|
-| Managed Postgres | TCP, **SSL required** | see [03-database-and-migrations.md](02-database-and-migrations.md) |
-| SendGrid | HTTPS 443 | HTTPS specifically because outbound SMTP is blocked |
+| Neon Postgres | TCP, **SSL required** | see [02-database-and-migrations.md](02-database-and-migrations.md) |
+| Brevo | HTTPS 443 | HTTPS specifically because outbound SMTP is blocked |
 | Cloudinary | HTTPS 443 | document storage; assets are `resource_type: "raw"` |
 
 ### What the backend does at boot
@@ -101,12 +101,12 @@ Note the process does **not** run migrations at boot, and that's deliberate — 
 
 | Variable | Notes |
 |---|---|
-| `DATABASE_URL` | Render's **External** URL when connecting from your machine; the Internal one only resolves inside Render's network. Takes precedence over the discrete `DB_*` vars. |
+| `DATABASE_URL` | Neon's **direct** connection string — the host *without* `-pooler`. Takes precedence over the discrete `DB_*` vars. See [02-database-and-migrations.md](02-database-and-migrations.md) for why the pooled one is wrong here. |
 | `DB_SSL` | **`true`.** Managed Postgres refuses unencrypted connections, and [`db.js`](../../server/src/config/db.js) only enables SSL when `NODE_ENV=production` **or** `DB_SSL=true`. |
-| `JWT_SECRET` | Signs the auth cookie. Changing it logs everyone out — which is also how you force that if you need to. |
+| `JWT_SECRET` | Signs the auth cookie. Changing it logs everyone out — which is also how you force that if you need to. ⚠️ **Nothing validates it at boot**, so an unset value starts a service that looks completely healthy and then answers `500` on the first *successful* login — see [03-troubleshooting.md](03-troubleshooting.md). |
 | `CLIENT_ORIGIN` | The frontend origin, for CORS. Defaults to `http://localhost:5173`, so **an unset value in production breaks every browser request** while curl still works. |
 | `CLIENT_BASE_URL` | The frontend URL, used to *build* invite and reset links. Backend variable despite being a frontend URL. No trailing slash. Unset → the server logs `CLIENT_BASE_URL is not set` and sends nothing. |
-| `SENDGRID_API_KEY` | Needs only the **Mail Send** permission. |
+| `BREVO_API_KEY` | From Brevo's **API Keys** tab, and it must start with `xkeysib-`. The adjacent **SMTP** tab hands out an `xsmtpsib-` key that the HTTP API rejects as `Key not found`. `SENDGRID_API_KEY` is still read as a fallback when this is unset. |
 | `MAIL_FROM` | Must be a **verified sender** or every send is a `403`. |
 | `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` | Document upload; without them uploads fail. |
 | `HR_REGISTRATION_CODE` | Gates the public HR self-registration flow. Compared with a timing-safe comparison; an unset value compares against `""`. |

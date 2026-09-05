@@ -3,6 +3,22 @@
 An HR platform for employee accounts and roles, leave types/balances and the holiday calendar, document upload and
 profile verification, payroll and payslips, and in-app notifications.
 
+## Live deployment
+
+**<https://leave-management-system-1-6t22.onrender.com>**
+
+Sign in with any of the [demo logins](#demo-logins) below. The frontend is a Render static site, the API a Render
+web service, and the database is Neon Postgres; documents live in Cloudinary and mail goes out through Brevo.
+
+Two things to expect, both properties of the free hosting rather than of the app:
+
+- **The first request takes ~30 seconds.** The API sleeps when idle and has to wake up. Everything after that is
+  fast, so a hanging first click is not a broken app.
+- **Emails may land in spam.** The sender is a `@gmail.com` address, and `gmail.com` cannot be domain-authenticated
+  by anyone except Google, so SPF/DKIM never align for it. This affects the password-reset and invite links. The
+  real fix needs a domain with DNS access —
+  see [the troubleshooting notes](docs/8.deployment_and_operations/03-troubleshooting.md).
+
 ## Quick start
 
 Two terminals:
@@ -75,7 +91,7 @@ Reviewers can sign in as any of the three roles and see the difference immediate
 | `demo.manager@example.com` | Manager | their team's approvals, team calendar, delegation |
 | `demo.employee@example.com` | Employee | their own balances, requests and payslips |
 
-All three share the password **`DemoPass123!`**.
+All three share the password **`Pass@123`**.
 
 These are deliberately the *only* published credentials, and they are safe to publish because this deployment holds
 test data only. They are also `@example.com` — reserved by RFC 2606, so no mail can ever be delivered to them, which

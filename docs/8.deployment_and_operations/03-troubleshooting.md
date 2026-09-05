@@ -30,6 +30,45 @@ without it and a top-level `import` killed the process. If the log shows a modul
 
 Free-tier hibernation. Normal. The first request after idle takes a few seconds.
 
+### Every direct URL is a blank page, but the app works if you start at `/`
+
+The static site's **SPA fallback rewrite is not being applied**. Without it only `/` serves `index.html`, so any
+path entered, emailed, bookmarked or refreshed returns an empty document — which breaks password-reset links,
+`/invite/:token`, and every page refresh, while in-app navigation keeps working because that never re-requests a URL.
+
+**Diagnose it from outside, and never by status code** — every failing case here answered `200`:
+
+```bash
+curl -s https://<frontend>/reset-password/abc | wc -c
+```
+
+Want the same byte count as `curl -s https://<frontend>/ | wc -c` (the `index.html` size). Zero means broken.
+
+The decisive tell: an extensionless path like `/foo` returns `200` with **zero bytes** while `/foo.txt` returns
+**404**. A live `/*` rewrite matches *both*, so two different answers prove no rule ran — that is Render's default
+static behaviour, not a malformed destination.
+
+**Cause seen here: the Redirects/Rewrites page did not persist the edit.** The form kept showing the right value.
+Fix: hard-reload (Ctrl+F5) after Save and confirm the value came back; if it reverted, the save never landed. Prove
+saves work at all by deleting a rule you know is live (`/api/*`) and confirming the API breaks. Retype fields rather
+than pasting — a trailing space in the `/*` source matches nothing and the UI cannot show it to you.
+
+Rules must be `/api/*` → the backend **above** `/*` → `/index.html`, both **Rewrite**. Render matches top-to-bottom
+and stops at the first hit, so the reverse order sends every API call to `index.html`.
+
+### Login answers `500`, but only with the *correct* password
+
+**`JWT_SECRET` is not set.** `signAuthToken` reads it at call time and nothing validates it at boot, so the service
+starts, `/health` returns `200`, and the boot log looks normal. A *wrong* password fails at the bcrypt compare and
+returns a clean `401`; a *correct* one reaches `jwt.sign(payload, undefined)`, which throws.
+
+**That 401-vs-500 split is the signature** — authentication failing only for valid credentials means the failure is
+after the password check, which is where signing happens. Grep the log for `secretOrPrivateKey must have a value`.
+
+It also breaks `POST /auth/register/hr` in a confusing way: the user row commits before the token is signed, so the
+account exists while the response `500`s and nobody is signed in — which reads as "registration failed" when it
+half-succeeded.
+
 ---
 
 ## Endpoints failing that exist in the repo
@@ -69,13 +108,14 @@ Often an **unmigrated database**, not an API fault. Run `npm run migrate:status`
 
 | Log line | Cause | Fix |
 |---|---|---|
-| `Mail provider is not configured` at boot | `SENDGRID_API_KEY` or `MAIL_FROM` missing — they're checked together | set both, confirm the restart |
+| `Mail provider is not configured` at boot | no provider key (`BREVO_API_KEY`, or `SENDGRID_API_KEY` as fallback) or no `MAIL_FROM` — checked together | set both, confirm the restart |
 | `[mail:not-configured] to=… subject=…` | same, at send time. ⚠️ **this logs the whole body, including live invite/reset links** | configure it; treat those logs as secrets meanwhile |
 | `[mail:disabled] feature=…` | that flow's flag is off | flip it |
-| `Mail provider rejected the message (403)` | `MAIL_FROM` isn't a verified sender | verify it in SendGrid |
-| `Mail provider rejected the message (401)` | bad or whitespace-damaged API key | re-paste it |
-| `Mail provider rejected the message (400)` | malformed payload — e.g. a quoted `MAIL_FROM` | unquote it |
-| `Mail provider unreachable: …` | network or the 10s timeout | check SendGrid status |
+| `Mail provider (brevo) rejected the message (401): {"message":"Key not found"}` | **an `xsmtpsib-` key from Brevo's SMTP tab instead of an `xkeysib-` one from API Keys** — the single most likely cause | regenerate on the **API Keys** tab |
+| `rejected the message (401)` with a correct-looking key | whitespace-damaged, truncated, or deleted at the provider | verify in isolation: `curl -s -X GET https://api.brevo.com/v3/account -H "api-key: <key>"` → `200` means the key is fine and the problem is how it's stored |
+| `rejected the message (400)` naming the sender | `MAIL_FROM` isn't a verified Brevo sender. List them: `curl -s https://api.brevo.com/v3/senders -H "api-key: <key>"` | use one of those addresses exactly |
+| `rejected the message (400)` otherwise | malformed payload — e.g. a quoted `MAIL_FROM` | unquote it |
+| `Mail provider (…) unreachable: …` | network or the 10s timeout | check provider status |
 
 ### The invite panel is amber: "Invited, but the email wasn't sent"
 
@@ -93,6 +133,13 @@ registered.
 Known and accepted. The sending domain has no SPF/DKIM authorising the provider, because Single Sender Verification
 publishes nothing. Fix is Domain Authentication — three CNAME records, needs DNS access. Not a content problem; the
 templates already do everything they can.
+
+### Historical: SendGrid, and why the provider moved
+
+SendGrid's free access lasts two months and then stops sending, so mail moved to **Brevo** (permanent free tier,
+and single-sender verification that needs no DNS). `config/mailer.js` still carries a SendGrid branch as migration
+scaffolding — `BREVO_API_KEY` takes precedence, and the fallback exists only so the env-var and deploy order cannot
+leave mail unconfigured, which would log live reset links. **Delete that branch once Brevo is settled.**
 
 ### Historical: SMTP
 

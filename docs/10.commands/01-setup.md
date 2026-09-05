@@ -19,7 +19,7 @@ Check what you have:
 node --version; npm --version; psql --version
 ```
 
-Cloudinary and SendGrid accounts are **optional locally**. Without them, document upload fails and email is
+Cloudinary and Brevo accounts are **optional locally**. Without them, document upload fails and email is
 console-logged instead of sent — everything else works.
 
 ---
@@ -103,6 +103,7 @@ Copy-Item server/.env server/.env.test
 NODE_ENV=test
 DB_NAME=leave_management_system_test
 DATABASE_URL=
+BREVO_API_KEY=
 SENDGRID_API_KEY=
 MAIL_FROM=
 ```

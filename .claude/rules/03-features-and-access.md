@@ -8,6 +8,13 @@
 
 ### 📧 Outbound Email
 
+> ⚠️ **The provider is Brevo now, not SendGrid (changed September 2026)** — SendGrid's free access lasts two months and then stops sending. Everything below about *architecture* still holds exactly: `mailer.js` is still the only module that knows a provider exists, still exports a function rather than a client, still has no SDK, and the swap was again a one-file change. Five provider-specific things differ, and the SendGrid detail further down is kept as the **rationale**, not as current fact:
+> - **Auth is an `api-key` header, not `Authorization: Bearer`.** A Bearer token answers `401`, which reads as a bad key rather than a wrong scheme.
+> - **The key must start with `xkeysib-`**, from Brevo's *API Keys* tab. The adjacent *SMTP* tab hands out an `xsmtpsib-` key that the HTTP API rejects with `Key not found` — check this first on any 401, it is the most likely cause.
+> - **There is no per-send tracking switch, and that is a genuine loss.** SendGrid let us disable click tracking *in the payload*, which mattered because every link this app mails is a single-use credential; on Brevo it is an **account-level dashboard setting** the code cannot enforce. If anyone switches tracking on there, reset and invite tokens start being routed through a third-party redirector. **Keep it off.**
+> - **Attachments use the singular `attachment` key** with `name` plus base64 `content`, and no content type.
+> - **`SENDGRID_API_KEY` is still read as a fallback** when `BREVO_API_KEY` is unset. That is migration scaffolding, not a feature: it exists so the env-var and deploy order cannot leave mail unconfigured, which would log live reset links to the platform's logs. **Delete that branch once Brevo is settled.**
+
 > 📮 **Four flows send email, and every one of them is switchable without a code change:** the password-reset link, the invite link, the payslip PDF after a confirmed payroll run, and the notice that a payslip has been **voided**. Everything else notifies in-app only (`notifications` table + bell). The void notice is the only one with no attachment — the point of the message is that a previous attachment no longer counts — and it deliberately carries no figure, because a void happens before the corrected payslip exists.
 >
 > ### The four files, and what each one is allowed to know
