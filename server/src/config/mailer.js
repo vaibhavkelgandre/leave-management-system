@@ -1,12 +1,14 @@
 // The one and only module in this codebase that knows a mail provider exists.
 //
-// This is the swap the previous version of this file predicted: it used
-// nodemailer over Gmail SMTP, called that "explicitly temporary", and noted
-// that moving to an HTTP-API provider would mean rewriting `sendMail` and
-// nothing else. That held — this file changed and mailService.js,
-// mailFeatures.js, mailLayout.js and every caller did not.
+// This is the second provider swap this file has absorbed, and both times it
+// changed alone: mailService.js, mailFeatures.js, mailLayout.js and every
+// caller were untouched. First nodemailer/Gmail SMTP → SendGrid, now SendGrid
+// → Brevo. That is the whole reason this exports a *function* rather than a
+// configured client (the deviation from config/cloudinary.js's precedent):
+// exposing a provider object would leak its shape into mailService.js and make
+// the next swap a two-file change.
 //
-// Why the swap was forced, so nobody tries to go back: **Render blocks
+// Why SMTP is not an option, so nobody tries to go back: **Render blocks
 // outbound SMTP.** Ports 587 and 465 both fail with a TCP connect timeout
 // (5s, before any TLS or auth), and a silent drop rather than ECONNREFUSED is
 // the signature of a firewall, not a slow host — a TCP handshake to Google is
@@ -15,37 +17,46 @@
 // picks one at *random*, so sends died on `connect ENETUNREACH 2404:6800:…`
 // whenever the coin landed on IPv6, which Render has no route for. Pinning to
 // IPv4 fixed that and revealed the port block underneath. No amount of SMTP
-// configuration gets mail out of Render.
+// configuration gets mail out of Render, and writing our own SMTP client
+// would not change what the network allows — the block is below our code.
 //
 // HTTPS on 443 is not blocked, which is the whole reason this works.
 //
-// Deliberately no `@sendgrid/mail` dependency: the v3 send endpoint is one
-// POST with a JSON body, `fetch` is global in Node 18+, and a package buys
-// nothing but risk here — an uncommitted nodemailer entry in package.json is
-// what crashed this project's Render deploy at boot earlier. Zero new
-// dependencies means that failure mode cannot recur.
+// Why Brevo specifically: SendGrid's free access is time-limited (two months),
+// after which sending stops. Brevo's free tier is permanent, and — the
+// constraint that actually decided it — it verifies a *single sender address*
+// by email rather than requiring a whole authenticated domain, which this
+// deployment has no DNS access to arrange. Resend was rejected for exactly
+// that reason: without a verified domain it will only deliver to the account
+// owner's own address, which is useless for emailing invites to employees.
 //
-// This still exports a *function*, not a client — the same deviation from
-// config/cloudinary.js's precedent, for the same reason. Exposing a provider
-// object would leak its shape into mailService.js and make the next swap a
-// two-file change.
+// Deliberately no provider SDK, same as before: Brevo's transactional send is
+// one POST with a JSON body and `fetch` is global in Node 18+. A package would
+// buy nothing but risk here — an uncommitted nodemailer entry in package.json
+// is what crashed this project's Render deploy at boot earlier, because a
+// top-level import of a module Render never installed kills the process. Zero
+// new dependencies means that failure mode cannot recur.
 //
-// `{ to, subject, text, html }` remains the exact intersection of SendGrid's,
-// Resend's and nodemailer's send calls, so it stays swappable. Resist adding
-// cc/bcc until something needs them: that's precisely where providers diverge.
+// `{ to, subject, text, html }` remains the exact intersection of Brevo's,
+// SendGrid's, Resend's and nodemailer's send calls, so it stays swappable.
+// Resist adding cc/bcc until something needs them: that's precisely where
+// providers diverge.
 //
 // `attachments` is the one key that is *not* a free intersection, and exists
 // for exactly one caller — the payslip PDF (mailService.sendSalarySlipEmail).
 // Callers hand over `{ filename, content: Buffer, contentType }` and this
-// function maps it to whatever the current provider wants. SendGrid demands
-// base64 in `content` plus `type` and `disposition`; nodemailer took a raw
-// Buffer; Resend takes either. Keep that mapping explicit here rather than
-// spreading the caller's object through, so the next swap stays one file.
+// function maps it to whatever the current provider wants. Brevo wants
+// `attachment` (singular) with `name` + base64 `content` and infers the type
+// from the extension; SendGrid demands `filename`, base64 `content`, `type`
+// and `disposition`; nodemailer took a raw Buffer. Keep that mapping explicit
+// here rather than spreading the caller's object through, so the next swap
+// stays one file.
 import dotenv from "dotenv";
 
 dotenv.config();
 
-const SEND_ENDPOINT = "https://api.sendgrid.com/v3/mail/send";
+const BREVO_SEND_ENDPOINT = "https://api.brevo.com/v3/smtp/email";
+const SENDGRID_SEND_ENDPOINT = "https://api.sendgrid.com/v3/mail/send";
 
 // A hung provider must not hold a request open indefinitely. The old SMTP
 // transport capped connect/greeting/socket separately; one HTTP request needs
@@ -54,9 +65,10 @@ const SEND_ENDPOINT = "https://api.sendgrid.com/v3/mail/send";
 // responding, so a slow provider delays that loop rather than a user's wait.
 const REQUEST_TIMEOUT_MS = 10_000;
 
-// SendGrid wants `from` as `{ email, name }`, but MAIL_FROM is conventionally
-// one RFC-5322 string. Parse the display-name form rather than making every
-// deployment configure the same identity twice.
+// Providers want `from` as `{ email, name }` (Brevo calls it `sender`, with
+// the identical shape), but MAIL_FROM is conventionally one RFC-5322 string.
+// Parse the display-name form rather than making every deployment configure
+// the same identity twice.
 //
 // The bare-address form is the common case and passes through untouched.
 //
@@ -86,27 +98,153 @@ function parseFrom(value) {
 }
 
 // No fallback, unlike the SMTP version which could default to SMTP_USER
-// because the authenticated mailbox *was* the sender. SendGrid rejects a send
-// whose `from` isn't a verified sender, so a missing MAIL_FROM has to read as
-// "unconfigured" (log the message) instead of 403-ing on every send.
+// because the authenticated mailbox *was* the sender. Every HTTP provider
+// rejects a send whose sender isn't verified, so a missing MAIL_FROM has to
+// read as "unconfigured" (log the message) instead of 4xx-ing on every send.
 function fromAddress() {
     return parseFrom(process.env.MAIL_FROM);
 }
 
-function apiKey() {
-    // Pasted keys routinely carry a trailing newline or stray spaces, which
-    // produces a 401 indistinguishable from a wrong key. Same reasoning as
-    // the Gmail App Password whitespace strip this replaces.
-    return (process.env.SENDGRID_API_KEY || "").trim();
+// Pasted keys routinely carry a trailing newline or stray spaces, which
+// produces a 401 indistinguishable from a wrong key. Same reasoning as the
+// Gmail App Password whitespace strip this ultimately replaces.
+function readKey(name) {
+    return (process.env[name] || "").trim();
+}
+
+// Which provider this deployment is configured for.
+//
+// Input: none — reads process.env. Output: `"brevo"`, `"sendgrid"`, or `null`
+// when neither key is present.
+//
+// Brevo wins when both keys are set, and that precedence is the whole point of
+// keeping two branches: it makes the migration orderless. A deploy that lands
+// before BREVO_API_KEY is set keeps sending through SendGrid instead of
+// falling through to the unconfigured path — which would not merely stop mail,
+// it would *log invite and reset links in plaintext* to Render's logs (see
+// sendMail below). Getting the env-var and deploy order wrong is ordinary; a
+// credential leak as the penalty for it is not acceptable.
+//
+// **Delete the SendGrid branch once Brevo is verified in production.** It is
+// migration scaffolding, not a feature — two code paths where one is never
+// exercised is how the unused one rots, and SendGrid's access expires anyway.
+function activeProvider() {
+    if (readKey("BREVO_API_KEY")) return "brevo";
+    if (readKey("SENDGRID_API_KEY")) return "sendgrid";
+    return null;
 }
 
 // Input: none. Output: true when there's enough config to attempt a send.
-// Checks the sender as well as the key, because SendGrid refuses an
-// unverified `from` and a half-filled environment is the common failure —
-// which would otherwise surface as a 403 on every send rather than the
+// Checks the sender as well as a key, because every provider refuses an
+// unverified sender and a half-filled environment is the common failure —
+// which would otherwise surface as a 4xx on every send rather than the
 // unconfigured fallback below.
 export function isMailConfigured() {
-    return Boolean(apiKey() && fromAddress());
+    return Boolean(activeProvider() && fromAddress());
+}
+
+// Builds the Brevo transactional-send request.
+//
+// Input: the provider-neutral message. Output: `{ endpoint, headers, body }`
+// ready for fetch. Never throws.
+//
+// Two differences from SendGrid worth knowing:
+//   - Auth is an `api-key` header, not `Authorization: Bearer`. A Bearer token
+//     here fails as 401, which reads as a bad key rather than a wrong scheme.
+//   - There is no per-send tracking-settings equivalent. SendGrid let us
+//     disable click tracking in the payload, which mattered because every link
+//     this app mails is a single-use credential — an invite or reset token —
+//     and click tracking rewrites hrefs through the provider's redirector,
+//     routing a live secret through a third party and destroying the one
+//     property that lets a recipient tell a real invite from phishing (a
+//     visible link to the sending domain; mismatched link and sender domains
+//     are themselves a spam signal). On Brevo that is an **account-level
+//     setting**, so it must be switched off in the dashboard and cannot be
+//     enforced from here. That is a genuine regression in what this file can
+//     guarantee, recorded rather than glossed over.
+function buildBrevoRequest({ to, subject, text, html, attachments }) {
+    const body = {
+        sender: fromAddress(),
+        to: [{ email: to }],
+        subject,
+        // Brevo names these textContent/htmlContent and takes them as plain
+        // keys, so unlike SendGrid there is no MIME-ordering constraint to
+        // respect. Both are still always sent: a message with no text part is
+        // scored as spam and renders blank in text-only clients.
+        textContent: text,
+        ...(html ? { htmlContent: html } : {}),
+        ...(attachments?.length
+            ? {
+                  attachment: attachments.map((file) => ({
+                      name: file.filename,
+                      content: file.content.toString("base64"),
+                  })),
+              }
+            : {}),
+    };
+
+    return {
+        endpoint: BREVO_SEND_ENDPOINT,
+        headers: {
+            "api-key": readKey("BREVO_API_KEY"),
+            accept: "application/json",
+            "content-type": "application/json",
+        },
+        body,
+    };
+}
+
+// Builds the SendGrid v3 send request.
+//
+// Input: the provider-neutral message. Output: `{ endpoint, headers, body }`
+// ready for fetch. Never throws.
+//
+// Migration scaffolding — see activeProvider(). Retained verbatim from the
+// previous version of this file so the fallback path is the one that was
+// actually in production, not a fresh reimplementation of it.
+function buildSendGridRequest({ to, subject, text, html, attachments }) {
+    // Order matters: SendGrid requires content parts in ascending MIME
+    // preference, so text/plain must precede text/html or the API 400s.
+    const content = [{ type: "text/plain", value: text }];
+    if (html) content.push({ type: "text/html", value: html });
+
+    // Every tracking feature off, explicitly, because SendGrid enables click
+    // tracking by default and that default is actively wrong for this app —
+    // see buildBrevoRequest's comment for the full reasoning. Set per-send
+    // rather than left to the dashboard so a console toggle can't silently
+    // reintroduce any of it.
+    const tracking_settings = {
+        click_tracking: { enable: false, enable_text: false },
+        open_tracking: { enable: false },
+        subscription_tracking: { enable: false },
+    };
+
+    const body = {
+        personalizations: [{ to: [{ email: to }] }],
+        from: fromAddress(),
+        subject,
+        content,
+        tracking_settings,
+        ...(attachments?.length
+            ? {
+                  attachments: attachments.map((file) => ({
+                      filename: file.filename,
+                      content: file.content.toString("base64"),
+                      type: file.contentType,
+                      disposition: "attachment",
+                  })),
+              }
+            : {}),
+    };
+
+    return {
+        endpoint: SENDGRID_SEND_ENDPOINT,
+        headers: {
+            Authorization: `Bearer ${readKey("SENDGRID_API_KEY")}`,
+            "Content-Type": "application/json",
+        },
+        body,
+    };
 }
 
 // Input: one message, described in provider-neutral terms, where
@@ -132,7 +270,8 @@ export function isMailConfigured() {
 //     inherits it for free. Note it logs the full plain-text body, which for
 //     invites and resets *contains a live link* — harmless on a laptop, a
 //     credential leak into log aggregation in a deployed environment, which
-//     is why isMailConfigured() must be true anywhere real.
+//     is why isMailConfigured() must be true anywhere real, and why
+//     activeProvider() prefers a working provider over this path.
 export async function sendMail({ to, subject, text, html, attachments }) {
     if (process.env.NODE_ENV === "test") return false;
 
@@ -147,81 +286,41 @@ export async function sendMail({ to, subject, text, html, attachments }) {
         return false;
     }
 
-    // Order matters: SendGrid requires content parts in ascending MIME
-    // preference, so text/plain must precede text/html or the API 400s.
-    const content = [{ type: "text/plain", value: text }];
-    if (html) content.push({ type: "text/html", value: html });
-
-    // Every tracking feature off, explicitly, because SendGrid enables click
-    // tracking by default and that default is actively wrong for this app.
-    //
-    // Click tracking rewrites every href into a `sendgrid.net` redirect. For
-    // these three emails that link is a single-use credential — an invite or
-    // password-reset token — so tracking would route a live secret through a
-    // third-party redirector, and it also destroys the one property that lets
-    // a recipient tell a real invite from a phishing attempt: a visible link
-    // to the domain the mail claims to come from. Mismatched link and sender
-    // domains are a spam signal in their own right.
-    //
-    // Open tracking embeds a remote 1x1 image, which contradicts
-    // mailLayout.js's no-remote-images rule (blocked images render as broken
-    // boxes) and buys nothing: nobody acts on an open rate for a password
-    // reset. Subscription tracking would append an unsubscribe footer to
-    // transactional mail nobody opted into, which is both nonsensical and a
-    // way to have someone "unsubscribe" from their own account emails.
-    //
-    // Set per-send rather than left to the dashboard so a console toggle
-    // can't silently reintroduce any of it.
-    const tracking_settings = {
-        click_tracking: { enable: false, enable_text: false },
-        open_tracking: { enable: false },
-        subscription_tracking: { enable: false },
-    };
-
-    const payload = {
-        personalizations: [{ to: [{ email: to }] }],
-        from: fromAddress(),
-        subject,
-        content,
-        tracking_settings,
-        ...(attachments?.length
-            ? {
-                  attachments: attachments.map((file) => ({
-                      filename: file.filename,
-                      content: file.content.toString("base64"),
-                      type: file.contentType,
-                      disposition: "attachment",
-                  })),
-              }
-            : {}),
-    };
+    const provider = activeProvider();
+    const build = provider === "brevo" ? buildBrevoRequest : buildSendGridRequest;
+    const { endpoint, headers, body } = build({ to, subject, text, html, attachments });
 
     let response;
     try {
-        response = await fetch(SEND_ENDPOINT, {
+        response = await fetch(endpoint, {
             method: "POST",
-            headers: {
-                Authorization: `Bearer ${apiKey()}`,
-                "Content-Type": "application/json",
-            },
-            body: JSON.stringify(payload),
+            headers,
+            body: JSON.stringify(body),
             signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
         });
     } catch (error) {
         // fetch rejects only on a network-level failure or the timeout above;
         // an HTTP error status resolves normally and is handled below. Both
         // become one thrown Error so callers see a single failure shape.
-        throw new Error(`Mail provider unreachable: ${error.message}`);
+        throw new Error(`Mail provider (${provider}) unreachable: ${error.message}`);
     }
 
-    // 202 Accepted is the success case and its body is empty, so there's
-    // nothing to parse or return. Anything else carries a JSON `errors` array
-    // whose messages are the only way to tell a bad key from an unverified
-    // sender — surface them instead of a bare status code, because that
-    // distinction is exactly what a deployment needs from the log line.
+    // Any 2xx is success and the body is not read: SendGrid answers 202 with
+    // an empty body, Brevo answers 201 with a messageId nothing here needs.
+    // Checking `response.ok` rather than a specific code keeps both correct
+    // and survives a provider adding, say, 200.
+    //
+    // A failure body carries the provider's own error text, which is the only
+    // way to tell a bad key from an unverified sender — surface it instead of
+    // a bare status code, because that distinction is exactly what a
+    // deployment needs from the log line. The provider is named because with
+    // two branches "rejected the message" alone no longer says which API
+    // answered.
     if (!response.ok) {
         const detail = await response.text().catch(() => "");
-        throw new Error(`Mail provider rejected the message (${response.status}): ${detail.slice(0, 500)}`);
+        throw new Error(
+            `Mail provider (${provider}) rejected the message (${response.status}): ${detail.slice(0, 500)}`
+        );
     }
 
     return true;
