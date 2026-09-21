@@ -16,6 +16,7 @@
 import {
     deleteExpiredInvitees,
     findAllUsers,
+    findDirectReports,
     findEmployeesPendingVerification,
     findPasswordHashById,
     findReportingLine,
@@ -29,6 +30,7 @@ import {
     updateEmploymentDates as updateEmploymentDatesRepo,
     updateProfileFields,
     updateProfileStatus,
+    updateRole,
     updateStatus,
 } from "../repositories/userRepository.js";
 import { findDocumentsByEmployeeId } from "../repositories/employeeDocumentRepository.js";
@@ -37,7 +39,13 @@ import {
     assertRequiredDocumentsVerified,
     assertNoRejectedDocuments,
 } from "./employeeDocumentService.js";
-import { assertNoCycle } from "./reportingService.js";
+import { findRoleByName } from "../repositories/roleRepository.js";
+import {
+    assertManagerAllowed,
+    assertNoCycle,
+    isManagerRoleAllowedFor,
+    roleRequiresManager,
+} from "./reportingService.js";
 import { isInActorsHrScope, getHrScopedEmployeeIds } from "./hrScopeService.js";
 import { voidInconsistentSlips } from "./salarySlipService.js";
 import { assertLegalProfileTransition } from "./profileVerificationStateMachine.js";
@@ -49,9 +57,10 @@ import {
     notifyTeamMemberAssigned,
     notifyAccountStatusChanged,
     notifyEmploymentDatesUpdated,
+    notifyRoleChanged,
 } from "./notificationService.js";
 import { hashPassword, verifyPassword } from "../utils/password.js";
-import { badRequest, forbidden, notFound, unauthorized } from "../utils/appError.js";
+import { badRequest, conflict, forbidden, notFound, unauthorized } from "../utils/appError.js";
 
 // The minimum a profile needs before HR can meaningfully review it — not
 // every optional field on the sheet (education, passport, blood group, …),
@@ -523,6 +532,129 @@ export async function changeManager(id, managerId, actor) {
     if (managerId && managerId !== target.manager_id) {
         await notifyManagerReassigned(target, managerId, actor.id);
         await notifyTeamMemberAssigned(target, managerId, actor.id);
+    }
+
+    return getUserById(id, actor);
+}
+
+// Promotes or demotes an existing account — the path that was missing until
+// now, so a role could only ever be set at invite time and an employee
+// promoted to manager stayed an employee in the system forever.
+//
+// Input: the target id, `{ role, managerId }` (managerId omitted leaves the
+// reporting line alone, `null` clears it), and the acting user. Output: the
+// updated public user row. Throws 400 for an illegal transition or a reporting
+// line the change would invalidate, 403 when the actor may see the target but
+// not manage them, 404 when the target is outside the actor scope entirely,
+// and 409 when the change would strand the target existing reports.
+//
+// **The thing to understand before touching this: role and authority are
+// separate in this app.** Role gates routes (`requireRole`), the client nav,
+// and reporting-line eligibility. Authority over a *row* comes from that row
+// `manager_id` — `isManagerOrDelegateOf` in leaveRequestService compares ids
+// and never looks at a role. Two consequences drive everything below:
+//   - **Promotion grants no authority by itself.** Making someone a MANAGER
+//     lets them be someone manager; it gives them command of nobody until
+//     reports are pointed at them via changeManager. That is deliberate, not
+//     a gap — but it is why the client must not imply otherwise.
+//   - **Demotion without moving their reports is an authorization leak.** The
+//     reports `manager_id` would still match the demoted account, so they
+//     would keep approving their old team leave, and no role gate stops it:
+//     GET /leave-requests/team has none, deliberately, so delegates can use
+//     it. Hence the 409 below rather than a silent restructure.
+//
+// Nothing else needs migrating with the role. Balances, the ledger, salary
+// structures, payslips, documents and profile status are all keyed on
+// `user_id` and role-independent; being a delegate already works for any
+// role; and `requireAuth` re-reads the role from the database on every
+// request — so the change takes effect on the very next call rather than when
+// an 8-hour token expires.
+export async function changeRole(id, { role, managerId }, actor) {
+    // An HR admin must not promote themselves, or demote themselves out of
+    // the ability to undo it. changeStatus makes the same call for
+    // self-deactivation.
+    if (id === actor.id) {
+        throw badRequest("You cannot change your own role");
+    }
+
+    const target = await getUserById(id, actor);
+
+    // Same two-way rule as changeManager/changeStatus: the account creator, or
+    // an HR-tier actor whose own scope contains them. A subtree walk never
+    // reaches sideways or upward, so another branch people stay unreachable.
+    if (actor.id !== target.invited_by && !(await isInActorsHrScope(actor, id))) {
+        throw forbidden("You can only change the role of someone on your own team");
+    }
+
+    // updateRoleSchema already excludes SUPER_ADMIN as a *destination*; this is
+    // the other direction. Demoting the root would leave the deployment with
+    // no super admin, and registerHrRoot refuses to create a second — so it
+    // would be unrecoverable through the API.
+    if (target.role === "SUPER_ADMIN") {
+        throw badRequest("The super admin role cannot be changed");
+    }
+
+    if (target.role === role) {
+        throw badRequest("This account already has that role");
+    }
+
+    // 1. Would the change strand anyone currently reporting to this account?
+    //    Checked per report rather than as "can the new role manage anyone",
+    //    because the answer depends on the report own role: a MANAGER may
+    //    manage an EMPLOYEE but not another MANAGER.
+    const reports = await findDirectReports(id);
+    const stranded = reports.filter((report) => !isManagerRoleAllowedFor(report.role, role));
+    if (stranded.length > 0) {
+        const names = stranded
+            .slice(0, 3)
+            .map((person) => `${person.first_name} ${person.last_name}`)
+            .join(", ");
+        const andMore = stranded.length > 3 ? `, and ${stranded.length - 3} more` : "";
+        const who = stranded.length === 1 ? "1 person" : `${stranded.length} people`;
+        throw conflict(
+            `${who} still report to this account (${names}${andMore}) and would be left without a valid ` +
+                `manager. Reassign them first.`
+        );
+    }
+
+    // 2. Is the target own reporting line still legal afterwards? The *merged*
+    //    value is checked, never the patch alone — with managerId optional,
+    //    half the answer comes from the stored row, so validating only what
+    //    was sent is how a change slips into a state a create would refuse.
+    //    (The same rule the delegation edit endpoint established.)
+    const nextManagerId = managerId === undefined ? target.manager_id : managerId;
+    if (nextManagerId) {
+        await assertManagerAllowed(role, nextManagerId);
+        await assertNoCycle(id, nextManagerId, role);
+    } else if (roleRequiresManager(role)) {
+        throw badRequest(
+            role === "HR_ADMIN"
+                ? "An HR admin must report to another HR admin — provide managerId with the role change"
+                : "An employee must have a manager — provide managerId with the role change"
+        );
+    }
+
+    const roleRecord = await findRoleByName(role);
+    if (!roleRecord) {
+        // Unreachable through the API, since the schema enum gates it — this
+        // would mean the roles table is missing a row a migration seeded.
+        throw badRequest("Unknown role");
+    }
+
+    const updated = await updateRole(id, roleRecord.id, nextManagerId);
+    if (!updated) {
+        throw notFound("User not found");
+    }
+
+    // Non-critical side effects. The role notification always fires; the
+    // reporting-line pair only when the line actually moved, and only toward a
+    // real manager — the same condition changeManager applies, for the same
+    // reason (there is nobody to tell "you now report to nobody").
+    await notifyRoleChanged(id, role, actor.id);
+    if (nextManagerId && nextManagerId !== target.manager_id) {
+        const moved = { ...target, role };
+        await notifyManagerReassigned(moved, nextManagerId, actor.id);
+        await notifyTeamMemberAssigned(moved, nextManagerId, actor.id);
     }
 
     return getUserById(id, actor);

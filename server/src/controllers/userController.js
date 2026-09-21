@@ -113,6 +113,21 @@ export async function updateStatus(req, res, next) {
     }
 }
 
+// Promotes or demotes a user. Passes the whole request body through rather
+// than picking out `role`, because `managerId` is an optional second half of
+// the same operation: a MANAGER may only report to an HR_ADMIN, so a promotion
+// often has to move the reporting line in the same call for the result to be
+// legal. The acting user goes through so the service can both record who made
+// the change and check they are entitled to manage this account.
+export async function updateRole(req, res, next) {
+    try {
+        const user = await userService.changeRole(req.params.id, req.body, req.user);
+        sendSuccess(res, 200, "Role updated", user);
+    } catch (error) {
+        next(error);
+    }
+}
+
 // Self-service profile edit (Module 5, FR-026) — always the caller's own
 // record, never masked (editing your own profile is always "self").
 export async function updateMyProfile(req, res, next) {

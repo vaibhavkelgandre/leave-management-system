@@ -348,8 +348,15 @@ describe("TeamPage", () => {
         // An invited account isn't deactivatable — `updateStatus` moves a row
         // between ACTIVE and INACTIVE and INVITED is neither — but the control
         // still renders, disabled, rather than being left out: omitting it made
-        // the row's remaining icon slide into the empty slot, so the two
-        // controls appeared in different places from one row to the next.
+        // the row's remaining icons slide into the empty slot, so the controls
+        // appeared in different places from one row to the next.
+        //
+        // The count below is the number of *fixed slots*, not of live actions:
+        // change-manager, change-role and status, in that order, every row.
+        // It went from two to three when PATCH /users/:id/role was added — the
+        // invariant being pinned is that it is the same on every row, so
+        // update the number when a slot is added rather than dropping the
+        // assertion.
         it("renders the deactivate control disabled on an invited row, keeping the icon columns aligned", async () => {
             const invited = makeUser({ id: "emp-1", first_name: "Zara", manager_id: "hr-viewer", status: "INVITED" });
             const active = makeUser({ id: "emp-2", first_name: "Yusuf", manager_id: "hr-viewer" });
@@ -362,10 +369,10 @@ describe("TeamPage", () => {
             const invitedToggle = invitedRow.getByRole("button", { name: /deactivate/i });
             expect(invitedToggle).toBeDisabled();
             expect(invitedToggle).toHaveAccessibleName(/available once Zara accepts the invite/i);
-            // Same two controls, same order, on a row where both are live.
+            // Same controls, same order, on a row where they are live.
             expect(activeRow.getByRole("button", { name: /^deactivate$/i })).toBeEnabled();
             for (const row of [invitedRow, activeRow]) {
-                expect(row.getAllByRole("button")).toHaveLength(2);
+                expect(row.getAllByRole("button")).toHaveLength(3);
             }
         });
     });

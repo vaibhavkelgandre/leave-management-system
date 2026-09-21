@@ -37,6 +37,7 @@ export function getNotificationRoute({ type, entity_id: entityId }) {
         case "EMPLOYMENT_DATES_UPDATED":
         case "SALARY_STRUCTURE_UPDATED":
         case "ACCOUNT_STATUS_CHANGED":
+        case "ROLE_CHANGED":
         case "PROFILE_CREATED":
             // PROFILE_CREATED: the new employee themself, right after
             // accepting their invite — lands on their own profile page,

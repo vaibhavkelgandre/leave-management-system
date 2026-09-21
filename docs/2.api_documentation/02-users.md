@@ -200,6 +200,46 @@ Deactivates or reactivates a user. Since `GET /api/auth/me` and `requireAuth` re
 
 ---
 
+### `PATCH /api/users/:id/role`
+
+Promotes or demotes an existing account. Until this endpoint existed a role could only be set at invite time, so an
+employee promoted to manager stayed an employee in the system permanently.
+
+**Auth**: `HR_ADMIN`/`SUPER_ADMIN` at the route level, plus the same creator-**or**-in-my-scope check as
+`PATCH /:id/manager` and `/:id/status`. Nobody may change their own role, and the `SUPER_ADMIN`'s role cannot be
+changed at all — demoting the root would be unrecoverable, since `POST /auth/register/hr` refuses to create a second.
+
+**Body**
+```json
+{ "role": "EMPLOYEE | MANAGER | HR_ADMIN", "managerId": "string (UUID) | null (optional)" }
+```
+
+`role` offers exactly the three roles `POST /api/users/invite` does, so role *change* permits what role *creation*
+permits; `SUPER_ADMIN` is rejected at validation (`422`) rather than reaching the singleton index.
+
+`managerId` is optional **and** nullable, and the two differ: omitting it leaves the existing reporting line alone,
+while an explicit `null` clears it. It is accepted here because a promotion frequently *requires* a reporting-line
+change — `ALLOWED_MANAGER_ROLES` lets a `MANAGER` report only to an `HR_ADMIN`, so promoting an employee who reports
+to a manager is legal only together with a new manager. Role and manager are written in one `UPDATE`, so the pair
+cannot half-apply.
+
+**Response** `200` — updated user (same shape as `GET /api/users/:id`).
+
+**Errors**: `400` changing your own role, the target is `SUPER_ADMIN`, the account already has that role, the merged
+reporting line breaks the hierarchy rule, or the new role requires a manager and none is available · `403` caller
+isn't HR-tier, **or** is HR-tier but is neither the target's creator nor has them in scope · `404` user not found ·
+`409` the change would strand the target's existing direct reports (the message names them), or would create a
+reporting cycle · `422` validation, including `SUPER_ADMIN` as a destination role.
+
+> ⚠️ **A role is not authority in this app, and the endpoint cannot paper over that.** Approval rights come from a
+> row's `manager_id` — `isManagerOrDelegateOf` compares ids and never reads a role. So promoting someone to `MANAGER`
+> makes them *eligible* to manage but gives them command of nobody until reports are pointed at them via
+> `PATCH /:id/manager`. The mirror image is why the `409` exists: demoting a manager whose reports still point at them
+> would leave them approving their old team's leave, and no role gate would stop it —
+> `GET /leave-requests/team` has none, deliberately, so delegates can use it.
+
+---
+
 ### `PATCH /api/users/me/profile`
 
 Module 5 v2 (FR-026): self-service profile edit. Always the caller's own record — no `:id` param, nothing to scope.

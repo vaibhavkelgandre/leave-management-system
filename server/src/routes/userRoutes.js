@@ -7,6 +7,7 @@ import {
     getMyTeamSize,
     getUserById,
     updateManager,
+    updateRole,
     updateStatus,
     updateMyProfile,
     changePassword,
@@ -19,6 +20,7 @@ import {
     inviteEmployeeSchema,
     userIdParamSchema,
     updateManagerSchema,
+    updateRoleSchema,
     updateStatusSchema,
 } from "../validators/userValidator.js";
 import { updateMyProfileSchema, changePasswordSchema } from "../validators/profileValidator.js";
@@ -51,6 +53,17 @@ router.patch(
     validateParams(userIdParamSchema),
     validateBody(updateManagerSchema),
     updateManager
+);
+// HR-tier only, same as /manager and /status: a plain MANAGER must never be
+// offered either, since promoting someone is an HR-desk action. Row-level
+// entitlement (creator, or in the actor's own HR scope) is then checked inside
+// changeRole — the role gate alone only answers "is this an HR admin".
+router.patch(
+    "/:id/role",
+    requireRole("HR_ADMIN", "SUPER_ADMIN"),
+    validateParams(userIdParamSchema),
+    validateBody(updateRoleSchema),
+    updateRole
 );
 router.patch(
     "/:id/status",

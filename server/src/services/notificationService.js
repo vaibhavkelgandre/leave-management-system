@@ -464,6 +464,46 @@ export async function notifyAccountStatusChanged(employeeId, newStatus, actorId)
     }
 }
 
+// Display names for the roles this notification can report. A local copy
+// rather than an import, for the same reason employeeDocumentService.js keeps
+// its own DOCUMENT_TYPE_LABELS: these messages are composed server-side, and
+// the client's ROLE_LABELS exists for badges it renders itself. SUPER_ADMIN is
+// absent because a role change can never produce it.
+const ROLE_MESSAGE_LABELS = {
+    EMPLOYEE: "Employee",
+    MANAGER: "Manager",
+    HR_ADMIN: "HR admin",
+};
+
+// Input: the employee's id, their new role name, and the HR actor who changed
+// it. Output: none — a non-critical side effect, so a failure is logged and
+// swallowed like every other notify* helper.
+//
+// The message names the new role, deliberately, unlike the pay-affecting
+// notifications which quote no figures: a role is not sensitive the way a
+// salary is, and "your role changed" without saying to what gives the reader
+// nothing to act on.
+//
+// Says nothing about the reporting line even when the same call moved it —
+// that is MANAGER_REASSIGNED's message, and it goes to a different audience
+// (TEAM_MEMBER_ASSIGNED tells the new manager). Folding them together would
+// mean one of those recipients reading a sentence written for the other.
+export async function notifyRoleChanged(employeeId, newRole, actorId) {
+    try {
+        const label = ROLE_MESSAGE_LABELS[newRole] || newRole;
+        await insertNotification({
+            recipientId: employeeId,
+            actorId,
+            type: "ROLE_CHANGED",
+            entityType: "PROFILE",
+            entityId: employeeId,
+            message: `Your role has been changed to ${label}`,
+        });
+    } catch (error) {
+        console.error("Failed to create ROLE_CHANGED notification:", error.message);
+    }
+}
+
 // Input: the newly created delegation (joined shape from
 // delegationRepository.insertDelegation — has `manager_id`/`delegate_id`).
 // Notifies the delegate — the one thing FR-020's original design never told

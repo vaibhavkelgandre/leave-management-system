@@ -48,6 +48,16 @@ export async function updateStatus(userId, status) {
     return unwrap(response);
 }
 
+// Promotes or demotes a user. `managerId` is sent only when the caller
+// supplies one, because the server treats an omitted key as "leave the
+// reporting line alone" and an explicit `null` as "clear it" — passing
+// `undefined` through as a JSON null would silently mean the second.
+export async function updateRole(userId, { role, managerId }) {
+    const payload = managerId === undefined ? { role } : { role, managerId };
+    const response = await apiClient.patch(`/users/${userId}/role`, payload);
+    return unwrap(response);
+}
+
 export async function getUserById(userId) {
     const response = await apiClient.get(`/users/${userId}`);
     return unwrap(response);

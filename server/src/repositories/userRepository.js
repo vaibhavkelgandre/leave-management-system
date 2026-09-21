@@ -266,6 +266,39 @@ export async function updateManager(id, managerId) {
     return result.rows[0] || null;
 }
 
+// Repoints a user at a different role row, and sets their manager in the same
+// statement.
+//
+// Input: a user id, a `roles.id` — the *id*, not the role name, so this layer
+// never needs to know the role vocabulary; the caller resolves the name
+// through roleRepository.findRoleByName and is the one place that can report
+// an unknown role sensibly — and the manager id the user should end up with
+// (which may be the one they already have, or `null`). Output:
+// `{ id, role_id, manager_id }`, or `null` for an unknown user id.
+//
+// **Both columns move in one UPDATE on purpose, even when the manager isn't
+// changing.** ALLOWED_MANAGER_ROLES couples them: a MANAGER may only report to
+// an HR_ADMIN, so promoting an employee who reports to a manager is only legal
+// together with a reporting-line change. Writing them as two statements would
+// mean a failure between them leaves the row in exactly the state the caller
+// validated against — a manager whose own manager is a manager. There is no
+// transaction wrapper in this codebase's repository layer, so the way to make
+// that unreachable is for it to be one statement.
+//
+// Nothing about authority is decided here. Which transitions are legal, and
+// whether the reporting lines on either side of the change survive it, is
+// userService.changeRole's job.
+export async function updateRole(id, roleId, managerId) {
+    const result = await pool.query(
+        `UPDATE users
+         SET role_id = $2, manager_id = $3
+         WHERE id = $1
+         RETURNING id, role_id, manager_id`,
+        [id, roleId, managerId]
+    );
+    return result.rows[0] || null;
+}
+
 // `fields` is a plain object keyed by snake_case column name — only keys in
 // SELF_EDITABLE_PROFILE_COLUMNS are ever written, so a caller can never
 // smuggle role_id/manager_id/status/email through here even by mistake;

@@ -33,6 +33,37 @@ const ALLOWED_MANAGER_ROLES = {
     HR_ADMIN: ["HR_ADMIN", "SUPER_ADMIN"],
 };
 
+// Answers the map's question without a database round trip: may someone whose
+// role is `managerRole` be the manager of someone whose role is `targetRole`?
+//
+// Input: two role names. Output: boolean — `false` for any role with no entry
+// in the map, which is what keeps SUPER_ADMIN unmanageable.
+//
+// Exists because `assertManagerAllowed` below takes a manager *id* and looks
+// the row up, which is the wrong shape for two callers that already hold both
+// roles in hand: a role change has to ask "would this person's existing
+// reports still be legally managed afterwards?" for each report, and asking it
+// as N id-lookups would re-fetch rows the caller already has. Kept here rather
+// than exporting the raw map so the map stays the single definition.
+export function isManagerRoleAllowedFor(targetRole, managerRole) {
+    return (ALLOWED_MANAGER_ROLES[targetRole] || []).includes(managerRole);
+}
+
+// Whether a role is allowed to exist with no manager at all.
+//
+// Input: a role name. Output: boolean.
+//
+// Only MANAGER may sit without one (and SUPER_ADMIN, which never has one) —
+// an EMPLOYEE with no manager has nobody to approve their leave, and an
+// HR_ADMIN with none is the manager-less-root gap SUPER_ADMIN was introduced
+// to close, so neither should be reachable by editing an existing account.
+// `inviteEmployeeSchema` enforces the same rule at creation time; this is the
+// copy a *change* to an existing account is checked against, which the schema
+// cannot do because it never sees the stored row.
+export function roleRequiresManager(role) {
+    return role === "EMPLOYEE" || role === "HR_ADMIN";
+}
+
 // Returns everyone under a user in the reporting tree (used for the "my team"
 // view) — excludes the user themselves so it's just their reports.
 export async function getTeam(userId) {

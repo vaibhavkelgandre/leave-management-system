@@ -15,7 +15,7 @@
 - Every table needs `created_at` and `updated_at`.
 - Store SQL scripts in `src/sql`.
 - Migrations are numbered sequentially and **never edited after being applied** — now enforced rather than merely asked for: the runner stores a SHA-256 of every applied file and refuses to run if one changed.
-  Current latest is `046_alter_notifications_add_delegation_edit_types.sql` → next migration must start at `047_...`.
+  Current latest is `047_alter_notifications_add_role_changed.sql` → next migration must start at `048_...`.
 
 > 🗓️ **A holiday may be declared in the recent past, but never in a previous calendar year (400, `assertHolidayIsNotInAPastYear`).** Reported alongside two other past-date gaps (leave submission and delegation windows), and this is the one where the obvious fix — block anything before today — would have been wrong: declaring a holiday days after the fact is ordinary (governments announce them late), an organisation setting this app up in August has to enter January onwards, and **the entire recount feature below exists precisely for a holiday declared *after* the leave it affects**. Its payslip-voiding half can only ever apply to a past period, since payroll runs on completed months only — so a block on past dates would have made a deliberately-built feature unreachable. The year boundary keeps all of that and stops the genuinely damaging case: a mistyped year recounting a previous year's leave and voiding settled payslips.
 > - **The *end* date is checked, not the start**, so a range straddling New Year (31 Dec – 1 Jan, entered in January) still works — the same "does this reach into the present" test the delegation rule uses.

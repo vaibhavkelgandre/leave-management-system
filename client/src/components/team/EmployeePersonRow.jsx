@@ -13,15 +13,15 @@
 // is the only version that can't affect column widths at all. Short
 // per-person errors (a failed status toggle) do stay in the cell.
 import { useState } from "react";
-import { Check, Pencil, UserCheck, UserX, X } from "lucide-react";
-import { updateManager, updateStatus } from "../../services/userService.js";
+import { Check, Pencil, UserCheck, UserCog, UserX, X } from "lucide-react";
+import { updateManager, updateRole, updateStatus } from "../../services/userService.js";
 import { toErrorMessage } from "../../services/httpError.js";
 import { useAuth } from "../../hooks/useAuth.js";
 import { ManagerSelect } from "./ManagerSelect.jsx";
 import { Avatar } from "../ui/Avatar.jsx";
 import { IconButton } from "../ui/IconButton.jsx";
 import { Badge, RoleBadge, StatusBadge } from "../ui/Badge.jsx";
-import { STATUS_BADGE_CLASSES } from "../../constants/badges.js";
+import { ROLE_LABELS, STATUS_BADGE_CLASSES } from "../../constants/badges.js";
 import { ROLES } from "../../constants/roles.js";
 
 const ALLOWED_MANAGER_ROLES = {
@@ -32,6 +32,12 @@ const ALLOWED_MANAGER_ROLES = {
     // or the single SUPER_ADMIN.
     HR_ADMIN: ["HR_ADMIN", "SUPER_ADMIN"],
 };
+
+// The roles HR may promote or demote someone into. Deliberately the same
+// three the invite form offers, because role *change* permits exactly what
+// role *creation* permits — and SUPER_ADMIN is a schema-enforced singleton the
+// server refuses as a destination outright.
+const ASSIGNABLE_ROLES = ["EMPLOYEE", "MANAGER", "HR_ADMIN"];
 
 const tdClasses = "px-3 py-3 align-top text-sm text-slate-700";
 
@@ -83,6 +89,17 @@ export function EmployeePersonRow({
     const [statusError, setStatusError] = useState(null);
     const [statusSaving, setStatusSaving] = useState(false);
 
+    const [isEditingRole, setIsEditingRole] = useState(false);
+    const [selectedRole, setSelectedRole] = useState(user.role);
+    // Tracked separately from `selectedManagerId` because a role change can
+    // *require* a reporting-line change that the manager editor would never
+    // make on its own: a MANAGER may only report to an HR_ADMIN, so promoting
+    // an employee who reports to a manager is only legal together with a new
+    // manager. The server takes both in one call for exactly that reason.
+    const [selectedRoleManagerId, setSelectedRoleManagerId] = useState(user.manager_id || "");
+    const [roleError, setRoleError] = useState(null);
+    const [roleSaving, setRoleSaving] = useState(false);
+
     // Both endpoints behind these controls (PATCH /users/:id/manager and
     // /status) are `requireRole("HR_ADMIN", "SUPER_ADMIN")` server-side, so
     // HR-tier is the whole client-side rule — a plain MANAGER is offered
@@ -106,11 +123,66 @@ export function EmployeePersonRow({
     // two names that could drift apart was the more confusing shape.
     const canEditManager = canManagePeople;
     const canEditStatus = canManagePeople;
+    // Two extra conditions beyond HR-tier, both of which the server refuses
+    // anyway — offered here only so the control isn't a button that can just
+    // fail: the super admin's role is unchangeable (demoting the root would be
+    // unrecoverable, since a second one cannot be created), and nobody may
+    // change their own role.
+    const canEditRole = canManagePeople && !isSelf && user.role !== ROLES.SUPER_ADMIN;
+
+    // Recomputed from whichever role is currently selected in the editor, not
+    // from `user.role` — the whole point is to offer the managers the *new*
+    // role permits.
+    const roleManagerOptions = users.filter(
+        (u) => u.id !== user.id && (ALLOWED_MANAGER_ROLES[selectedRole] || []).includes(u.role)
+    );
 
     function startEditing() {
         setSelectedManagerId(user.manager_id || "");
         setError(null);
+        setIsEditingRole(false);
         setIsEditingManager(true);
+    }
+
+    function startEditingRole() {
+        setSelectedRole(user.role);
+        setSelectedRoleManagerId(user.manager_id || "");
+        setRoleError(null);
+        setIsEditingManager(false);
+        setIsEditingRole(true);
+    }
+
+    function cancelEditingRole() {
+        setIsEditingRole(false);
+        setRoleError(null);
+    }
+
+    // Re-picks the reporting line whenever the chosen role changes, keeping the
+    // existing manager when the new role still permits them and clearing it
+    // when it doesn't — so HR is asked for a new one instead of submitting a
+    // combination the server will refuse. A plain event handler rather than an
+    // effect on `selectedRole`, which would trip `set-state-in-effect`.
+    function handleRoleSelect(nextRole) {
+        setSelectedRole(nextRole);
+        const allowed = ALLOWED_MANAGER_ROLES[nextRole] || [];
+        setSelectedRoleManagerId(manager && allowed.includes(manager.role) ? manager.id : "");
+    }
+
+    async function saveRole() {
+        setRoleSaving(true);
+        setRoleError(null);
+        try {
+            // managerId is always sent, so what HR saw in the picker is
+            // exactly what gets applied — an omitted key would mean "leave the
+            // stored line alone", which is not what an emptied picker says.
+            await updateRole(user.id, { role: selectedRole, managerId: selectedRoleManagerId || null });
+            setIsEditingRole(false);
+            await onChanged();
+        } catch (err) {
+            setRoleError(toErrorMessage(err, "Unable to update role"));
+        } finally {
+            setRoleSaving(false);
+        }
     }
 
     function cancelEditing() {
@@ -197,13 +269,18 @@ export function EmployeePersonRow({
             )}
             {showActions && (
                 <td className={`${tdClasses} text-right whitespace-nowrap`}>
-                    {/* Two fixed slots, always both rendered, so the icons form
-                        two straight columns down the table instead of drifting
+                    {/* Three fixed slots, always all rendered, so the icons
+                        form straight columns down the table instead of drifting
                         with however many controls a given row happens to offer.
-                        Order is fixed too: change-manager first, status second. */}
+                        Order is fixed too: change-manager, change-role, status. */}
                     <div className="flex shrink-0 items-center justify-end gap-1">
                         {canEditManager && !isEditingManager ? (
                             <IconButton icon={Pencil} label="Change manager" tooltipPortal onClick={startEditing} />
+                        ) : (
+                            <ActionSlot />
+                        )}
+                        {canEditRole && !isEditingRole ? (
+                            <IconButton icon={UserCog} label="Change role" tooltipPortal onClick={startEditingRole} />
                         ) : (
                             <ActionSlot />
                         )}
@@ -245,6 +322,82 @@ export function EmployeePersonRow({
             )}
         </tr>
     );
+
+    if (isEditingRole) {
+        return (
+            <>
+                {personRow}
+                <tr className="bg-slate-50/80">
+                    <td colSpan={columnCount} className="px-3 pb-3">
+                        {roleError && (
+                            <p role="alert" className="mb-1 text-xs text-red-600">
+                                {roleError}
+                            </p>
+                        )}
+                        <div className="flex max-w-xl flex-wrap items-start gap-1.5">
+                            <div className="min-w-0 flex-1">
+                                <label
+                                    htmlFor={`role-${user.id}`}
+                                    className="mb-1 block text-xs font-medium text-slate-700"
+                                >
+                                    {`Role for ${fullName}`}
+                                </label>
+                                <select
+                                    id={`role-${user.id}`}
+                                    value={selectedRole}
+                                    onChange={(event) => handleRoleSelect(event.target.value)}
+                                    className="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                                >
+                                    {ASSIGNABLE_ROLES.map((role) => (
+                                        <option key={role} value={role}>
+                                            {ROLE_LABELS[role]}
+                                        </option>
+                                    ))}
+                                </select>
+                                {/* Said out loud because it is the surprising
+                                    part: a role is not authority in this app.
+                                    Approval rights come from whose reporting
+                                    line points at you, so a promotion on its
+                                    own would otherwise look like it did
+                                    nothing. */}
+                                {selectedRole === ROLES.MANAGER && user.role !== ROLES.MANAGER && (
+                                    <p className="mt-1 text-xs text-slate-500">
+                                        Managers only approve leave for people who report to them — move their
+                                        reporting lines here too.
+                                    </p>
+                                )}
+                            </div>
+                            {selectedRole !== user.role && (
+                                <div className="min-w-0 flex-1">
+                                    <ManagerSelect
+                                        id={`role-manager-${user.id}`}
+                                        label="Reports to"
+                                        value={selectedRoleManagerId}
+                                        onChange={(event) => setSelectedRoleManagerId(event.target.value)}
+                                        options={roleManagerOptions}
+                                        targetRole={selectedRole}
+                                        currentUserId={currentUser.id}
+                                    />
+                                </div>
+                            )}
+                            <div className="flex items-start gap-1.5 pt-6">
+                                <IconButton
+                                    icon={Check}
+                                    label="Save"
+                                    variant="primary"
+                                    loading={roleSaving}
+                                    disabled={selectedRole === user.role}
+                                    tooltipPortal
+                                    onClick={saveRole}
+                                />
+                                <IconButton icon={X} label="Cancel" variant="ghost" tooltipPortal onClick={cancelEditingRole} />
+                            </div>
+                        </div>
+                    </td>
+                </tr>
+            </>
+        );
+    }
 
     if (!isEditingManager) return personRow;
 

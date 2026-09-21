@@ -54,3 +54,24 @@ export const updateManagerSchema = z.object({
 export const updateStatusSchema = z.object({
     status: z.enum(["ACTIVE", "INACTIVE"]),
 });
+
+// Used when HR promotes or demotes an existing account.
+//
+// The enum is the same three roles `inviteEmployeeSchema` offers, which is the
+// point: role *change* permits exactly what role *creation* permits, so HR
+// cannot reach a state through one door that the other refuses. SUPER_ADMIN is
+// absent, so naming it is a 422 here rather than a confusing unique-violation
+// from migration 038's partial index further down.
+//
+// `managerId` is optional *and* nullable, and the two mean different things —
+// omitted leaves the existing reporting line alone, while an explicit `null`
+// clears it. It is accepted at all because a promotion frequently forces a
+// reporting-line change: ALLOWED_MANAGER_ROLES lets a MANAGER report only to
+// an HR_ADMIN, so promoting an employee who reports to a manager would
+// otherwise land in a state the rules forbid. Whether the *merged* result is
+// legal is checked in userService.changeRole, not here — this schema never
+// sees the stored row, so it cannot know what the omitted half currently is.
+export const updateRoleSchema = z.object({
+    role: z.enum(["EMPLOYEE", "MANAGER", "HR_ADMIN"]),
+    managerId: z.string().uuid("managerId must be a valid id").optional().nullable(),
+});
